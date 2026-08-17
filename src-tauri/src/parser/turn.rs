@@ -360,6 +360,13 @@ fn handle_event_msg(
             }
         }
 
+        // Current Codex records turn items as `item_completed` events. The legacy
+        // `agent_message` event is still present in older rollouts, but current
+        // assistant and user text lives under the nested `item` object instead.
+        "item_completed" => {
+            handle_item_completed(entry, turns, current_turn_id, index);
+        }
+
         "user_message" => {
             let message = payload
                 .get("message")
@@ -396,23 +403,11 @@ fn handle_event_msg(
                         .get("message")
                         .map(extract_message_text)
                         .unwrap_or_default();
-                    if !text.is_empty() && text != EXTERNAL_SESSION_IMPORTED_MARKER {
-                        let phase = payload
-                            .get("phase")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let is_final = phase.as_deref() == Some("final_answer");
-                        if is_final && turn.final_answer.is_none() {
-                            turn.final_answer = Some(text.clone());
-                        }
-                        turn.agent_messages.push(AgentMsg {
-                            text,
-                            phase,
-                            timestamp: ts.to_string(),
-                            is_reasoning: false,
-                            order: index,
-                        });
-                    }
+                    let phase = payload
+                        .get("phase")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    append_agent_message(turn, text, phase, ts, false, index);
                 }
             }
         }
@@ -812,6 +807,97 @@ fn handle_event_msg(
     }
 }
 
+fn handle_item_completed(
+    entry: &RawEntry,
+    turns: &mut indexmap::IndexMap<String, CodexTurn>,
+    current_turn_id: &Option<String>,
+    index: usize,
+) {
+    let payload = &entry.payload;
+    let item = match payload.get("item") {
+        Some(Value::Object(item)) => item,
+        _ => return,
+    };
+    let item_type = match item.get("type").and_then(|v| v.as_str()) {
+        Some(item_type) => item_type,
+        None => return,
+    };
+    let turn_id = payload
+        .get("turn_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or(current_turn_id.as_deref());
+    let Some(turn_id) = turn_id else {
+        return;
+    };
+    let Some(turn) = turns.get_mut(turn_id) else {
+        return;
+    };
+    let timestamp = entry.timestamp.as_deref().unwrap_or("");
+
+    match item_type {
+        "UserMessage" => {
+            if turn.user_message.is_none() {
+                let text = item
+                    .get("content")
+                    .map(extract_content_text)
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    turn.user_message = Some(text);
+                }
+            }
+        }
+        "AgentMessage" => {
+            let text = extract_item_content(item);
+            let phase = item
+                .get("phase")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            append_agent_message(turn, text, phase, timestamp, false, index);
+        }
+        "Reasoning" => {
+            let text = item
+                .get("summary_text")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            if !text.is_empty() {
+                append_agent_message(turn, text, None, timestamp, true, index);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn append_agent_message(
+    turn: &mut CodexTurn,
+    text: String,
+    phase: Option<String>,
+    timestamp: &str,
+    is_reasoning: bool,
+    order: usize,
+) {
+    if !is_reasoning && (text.is_empty() || text == EXTERNAL_SESSION_IMPORTED_MARKER) {
+        return;
+    }
+    if phase.as_deref() == Some("final_answer") && turn.final_answer.is_none() {
+        turn.final_answer = Some(text.clone());
+    }
+    turn.agent_messages.push(AgentMsg {
+        text,
+        phase,
+        timestamp: timestamp.to_string(),
+        is_reasoning,
+        order,
+    });
+}
+
 fn handle_response_item(
     entry: &RawEntry,
     turns: &mut indexmap::IndexMap<String, CodexTurn>,
@@ -1171,7 +1257,13 @@ fn handle_response_item(
         // is a JSON object rather than a plain string.
         "message" if payload.get("role").and_then(|v| v.as_str()) == Some("assistant") => {
             if let Some(turn) = turns.get_mut(tid) {
-                if turn.final_answer.is_none() {
+                let phase = payload.get("phase").and_then(|v| v.as_str());
+                // Current Codex emits both commentary and final assistant messages as
+                // response items. Only an unphased legacy message or an explicit final answer
+                // is the turn's final answer; commentary is represented by item_completed.
+                if phase.map_or(true, |phase| phase == "final_answer")
+                    && turn.final_answer.is_none()
+                {
                     let text = extract_item_content(payload);
                     if !text.is_empty() {
                         turn.final_answer = Some(text);
@@ -1254,7 +1346,7 @@ fn handle_turn_context(
     }
 }
 
-/// Extract text from a response_item `content` field.
+/// Extract text from a response/item `content` field.
 /// Handles:
 /// - Plain strings (standard message content)
 /// - Content arrays (`[{"type":"text","text":"..."}]`, OpenAI format)
@@ -1531,6 +1623,50 @@ mod tests {
             tool_order < second_msg_order,
             "tool call ({tool_order}) should sort before the second message ({second_msg_order})"
         );
+    }
+
+    #[test]
+    fn current_item_completed_turn_items_populate_user_and_agent_messages() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-08-17T10:00:00Z","type":"session_meta","payload":{"id":"current-session","timestamp":"2026-08-17T10:00:00Z"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","id":"user-1","content":[{"type":"text","text":"Inspect the parser","text_elements":[]}]}}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:03Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"I will inspect the parser."}],"phase":"commentary"}}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:04Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"AgentMessage","id":"msg-2","content":[{"type":"Text","text":"The parser is updated."}],"phase":"final_answer"}}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:05Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1786960805.0}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+
+        assert_eq!(turns.len(), 1);
+        let turn = &turns[0];
+        assert_eq!(turn.user_message.as_deref(), Some("Inspect the parser"));
+        assert_eq!(turn.agent_messages.len(), 2);
+        assert_eq!(turn.agent_messages[0].text, "I will inspect the parser.");
+        assert_eq!(turn.agent_messages[0].phase.as_deref(), Some("commentary"));
+        assert!(!turn.agent_messages[0].is_reasoning);
+        assert_eq!(turn.agent_messages[1].text, "The parser is updated.");
+        assert_eq!(
+            turn.agent_messages[1].phase.as_deref(),
+            Some("final_answer")
+        );
+        assert_eq!(turn.final_answer.as_deref(), Some("The parser is updated."));
+        assert!(turn.agent_messages[0].order < turn.agent_messages[1].order);
+    }
+
+    #[test]
+    fn current_item_completed_empty_reasoning_is_not_rendered() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-08-17T10:00:00Z","type":"session_meta","payload":{"id":"reasoning-session","timestamp":"2026-08-17T10:00:00Z"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"Reasoning","id":"reasoning-1","summary_text":[],"raw_content":[]}}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1786960803.0}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].agent_messages.is_empty());
     }
 
     #[test]
@@ -3510,6 +3646,41 @@ mod tests {
         assert_eq!(
             turns[0].final_answer.as_deref(),
             Some("Task completed successfully.")
+        );
+    }
+
+    #[test]
+    fn current_response_item_commentary_is_not_used_as_final_answer() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-08-17T10:00:00Z","type":"session_meta","payload":{"id":"current-message-phases","timestamp":"2026-08-17T10:00:00Z"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Progress update"}]}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Finished"}]}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:04Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1786960804.0}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].final_answer.as_deref(), Some("Finished"));
+    }
+
+    #[test]
+    fn current_item_user_message_wins_over_context_response_item() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-08-17T10:00:00Z","type":"session_meta","payload":{"id":"current-user-message","timestamp":"2026-08-17T10:00:00Z"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"System context that must not be shown"}]}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:03Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","id":"user-1","content":[{"type":"text","text":"Read the current session format","text_elements":[]}]}}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:04Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1786960804.0}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].user_message.as_deref(),
+            Some("Read the current session format")
         );
     }
 
