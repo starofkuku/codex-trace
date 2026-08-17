@@ -848,7 +848,8 @@ fn handle_item_completed(
             }
         }
         "AgentMessage" => {
-            let text = extract_item_content(item);
+            let text =
+                extract_item_content_value(item.get("content").or_else(|| item.get("output")));
             let phase = item
                 .get("phase")
                 .and_then(|v| v.as_str())
@@ -1353,7 +1354,10 @@ fn handle_turn_context(
 /// - JSON objects (schema-validated responses from `codex exec resume --output-schema`,
 ///   Codex v0.132.0+, PR #23123)
 fn extract_item_content(payload: &Value) -> String {
-    let content = payload.get("content").or_else(|| payload.get("output"));
+    extract_item_content_value(payload.get("content").or_else(|| payload.get("output")))
+}
+
+fn extract_item_content_value(content: Option<&Value>) -> String {
     match content {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Array(arr)) => arr
