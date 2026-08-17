@@ -4,6 +4,18 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.2] — 2026-08-17
+
+This patch restores release builds for the current Codex item-completion parser.
+
+### Fixed
+
+- **Compile current Codex item completions**. Nested `item_completed` objects now pass
+  their `content` or `output` value into the shared text extractor without a Rust type
+  mismatch.
+
+[0.4.2]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.2
+
 ## [0.4.1] — 2026-08-17
 
 This patch keeps session content visible with the current Codex rollout format.
@@ -13,7 +25,7 @@ This patch keeps session content visible with the current Codex rollout format.
 - **Parse current Codex turn items**. User messages, assistant commentary/final answers,
   and non-empty reasoning summaries are now read from `item_completed` events.
 
-[0.4.1]: https://github.com/PixelPaw-Labs/codex-trace/releases/tag/v0.4.1
+[0.4.1]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.1
 
 ## [0.4.0] — 2026-06-28
 
