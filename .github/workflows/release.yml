@@ -217,6 +217,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v5
 
@@ -252,6 +253,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=codex-trace
+          cache-to: type=gha,mode=max,scope=codex-trace
 
   publish:
     name: Publish release (flip draft → public)
