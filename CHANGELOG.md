@@ -4,6 +4,17 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.1] — 2026-08-17
+
+This patch keeps session content visible with the current Codex rollout format.
+
+### Fixed
+
+- **Parse current Codex turn items**. User messages, assistant commentary/final answers,
+  and non-empty reasoning summaries are now read from `item_completed` events.
+
+[0.4.1]: https://github.com/PixelPaw-Labs/codex-trace/releases/tag/v0.4.1
+
 ## [0.4.0] — 2026-06-28
 
 A fresh app icon in codex green, a quieter macOS install, and a much lighter startup.
