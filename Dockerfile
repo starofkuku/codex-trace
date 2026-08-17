@@ -109,7 +109,7 @@ VOLUME ["/home/app/.codex/sessions"]
 EXPOSE 1422
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD /bin/sh -c 'exec 3<>/dev/tcp/127.0.0.1/${CODEXTRACE_HTTP_PORT:-1422}' || exit 1
+    CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${CODEXTRACE_HTTP_PORT:-1422}"]
 
 ENTRYPOINT ["dumb-init", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["codex-trace", "--headless"]
