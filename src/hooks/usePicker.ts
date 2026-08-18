@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../lib/invoke";
-import type { CodexSessionInfo, SettingsResponse } from "../../shared/types";
+import type { CodexSessionInfo, SessionActivityUpdate, SettingsResponse } from "../../shared/types";
 import { useTauriEvent } from "./useTauriEvent";
 
 interface PickerState {
@@ -8,6 +8,7 @@ interface PickerState {
   loading: boolean;
   searchQuery: string;
   sessionsDir: string;
+  showOngoingOnly: boolean;
 }
 
 export function usePicker() {
@@ -16,6 +17,7 @@ export function usePicker() {
     loading: false,
     searchQuery: "",
     sessionsDir: "",
+    showOngoingOnly: false,
   });
 
   const discoverSessions = useCallback(async (sessionsDir: string) => {
@@ -39,19 +41,45 @@ export function usePicker() {
     setState((prev) => ({ ...prev, searchQuery: query }));
   }, []);
 
-  const updateSessionOngoing = useCallback((path: string, ongoing: boolean) => {
-    setState((prev) => {
-      const idx = prev.sessions.findIndex((s) => s.path === path);
-      if (idx === -1 || prev.sessions[idx].is_ongoing === ongoing) return prev;
-      const sessions = [...prev.sessions];
-      sessions[idx] = { ...sessions[idx], is_ongoing: ongoing };
-      return { ...prev, sessions };
-    });
+  const setShowOngoingOnly = useCallback((showOngoingOnly: boolean) => {
+    setState((prev) => ({ ...prev, showOngoingOnly }));
   }, []);
 
-  // picker-refresh carries no session data — the watcher sends only a lightweight
-  // signal. Re-fetch via the API so the expensive discover_sessions scan runs
-  // only on demand and is coalesced by the server-side cache.
+  const updateSessionActivity = useCallback(
+    (path: string, ongoing: boolean, fileSizeBytes?: number) => {
+      setState((prev) => {
+        const idx = prev.sessions.findIndex((s) => s.path === path);
+        if (idx === -1) return prev;
+        const current = prev.sessions[idx];
+        if (
+          current.is_ongoing === ongoing &&
+          (fileSizeBytes === undefined || current.file_size_bytes === fileSizeBytes)
+        ) {
+          return prev;
+        }
+        const sessions = [...prev.sessions];
+        sessions[idx] = {
+          ...current,
+          is_ongoing: ongoing,
+          ...(fileSizeBytes === undefined ? {} : { file_size_bytes: fileSizeBytes }),
+        };
+        return { ...prev, sessions };
+      });
+    },
+    [],
+  );
+
+  const updateSessionOngoing = useCallback(
+    (path: string, ongoing: boolean) => updateSessionActivity(path, ongoing),
+    [updateSessionActivity],
+  );
+
+  useTauriEvent<SessionActivityUpdate>("session-activity", (update) => {
+    updateSessionActivity(update.path, update.is_ongoing, update.file_size_bytes);
+  });
+
+  // Structural changes carry no session data. Re-fetch only when a session is added or removed;
+  // ordinary appends arrive through the per-session activity event above.
   useTauriEvent("picker-refresh", () => {
     setState((prev) => {
       if (!prev.sessionsDir) return prev;
@@ -68,14 +96,17 @@ export function usePicker() {
     };
   }, []);
 
+  const visibleSessions = state.showOngoingOnly
+    ? state.sessions.filter((session) => session.is_ongoing)
+    : state.sessions;
   const filteredSessions = state.searchQuery
-    ? state.sessions.filter(
+    ? visibleSessions.filter(
         (s) =>
           (s.thread_name ?? "").toLowerCase().includes(state.searchQuery.toLowerCase()) ||
           s.id.toLowerCase().includes(state.searchQuery.toLowerCase()) ||
           (s.cwd ?? "").toLowerCase().includes(state.searchQuery.toLowerCase()),
       )
-    : state.sessions;
+    : visibleSessions;
 
   return {
     sessions: filteredSessions,
@@ -83,7 +114,9 @@ export function usePicker() {
     loading: state.loading,
     searchQuery: state.searchQuery,
     sessionsDir: state.sessionsDir,
+    showOngoingOnly: state.showOngoingOnly,
     setSearchQuery,
+    setShowOngoingOnly,
     discoverSessions,
     updateSessionOngoing,
   };

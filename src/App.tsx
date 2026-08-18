@@ -13,7 +13,11 @@ import { InfoBar } from "./components/InfoBar";
 import { KeybindBar } from "./components/KeybindBar";
 import { ViewToolbar } from "./components/ViewToolbar";
 import { ResizeHandle } from "./components/ResizeHandle";
+import { SidebarToggle } from "./components/SidebarToggle";
 import { SettingsModal } from "./components/SettingsModal";
+
+const DEFAULT_SIDEBAR_WIDTH = 260;
+const COLLAPSED_SIDEBAR_WIDTH = 36;
 
 function findToolByCallId(tools: CodexToolCall[], callId: string): CodexToolCall | null {
   for (const tool of tools) {
@@ -32,7 +36,8 @@ export function App() {
   const [selectedTurn, setSelectedTurn] = useState(0);
   const [pickerSelected, setPickerSelected] = useState(0);
   const [showKeybinds, setShowKeybinds] = useState(true);
-  const [sidebarWidth, setSidebarWidth] = useState(200);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
   const [workerPanelWidth, setWorkerPanelWidth] = useState(380);
@@ -68,6 +73,12 @@ export function App() {
       updateSessionOngoing(session.sessionPath, session.session?.is_ongoing ?? false);
     }
   }, [session.sessionPath, session.session?.is_ongoing, updateSessionOngoing]);
+
+  useEffect(() => {
+    setPickerSelected((index) =>
+      picker.sessions.length === 0 ? 0 : Math.min(index, picker.sessions.length - 1),
+    );
+  }, [picker.sessions.length]);
 
   const handleSelectSession = useCallback(
     (info: CodexSessionInfo) => {
@@ -118,6 +129,10 @@ export function App() {
   }, [view, session.session, selectedTurn, addAllTools]);
 
   const collapseAll = useCallback(() => clearTools(), [clearTools]);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((collapsed) => !collapsed);
+  }, []);
 
   const goToSessions = useCallback(() => setView("picker"), []);
 
@@ -192,20 +207,29 @@ export function App() {
 
       <div className="app-body">
         {/* Left sidebar */}
-        <div className="app__sidebar" style={{ width: sidebarWidth, minWidth: sidebarWidth }}>
+        <div
+          className={`app__sidebar${sidebarCollapsed ? " app__sidebar--collapsed" : ""}`}
+          style={{
+            width: sidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : sidebarWidth,
+            minWidth: sidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : sidebarWidth,
+          }}
+        >
           <div className="app__sidebar-header">
             <span className="app__sidebar-title">SESSIONS</span>
+            <SidebarToggle collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
           </div>
-          <SidebarTree
-            sessions={picker.allSessions}
-            selectedPath={session.sessionPath || null}
-            collapsedDates={collapsedDates}
-            onSelectSession={handleSelectSession}
-            onToggleDate={handleToggleDate}
-          />
+          {!sidebarCollapsed && (
+            <SidebarTree
+              sessions={picker.allSessions}
+              selectedPath={session.sessionPath || null}
+              collapsedDates={collapsedDates}
+              onSelectSession={handleSelectSession}
+              onToggleDate={handleToggleDate}
+            />
+          )}
         </div>
 
-        <ResizeHandle onResize={setSidebarWidth} />
+        {!sidebarCollapsed && <ResizeHandle onResize={setSidebarWidth} />}
 
         {/* Main content */}
         <div className="main-content">
@@ -214,9 +238,11 @@ export function App() {
               sessions={picker.sessions}
               loading={picker.loading}
               searchQuery={picker.searchQuery}
+              showOngoingOnly={picker.showOngoingOnly}
               selectedIndex={pickerSelected}
               onSelectSession={handleSelectSession}
               onSearchChange={picker.setSearchQuery}
+              onShowOngoingOnlyChange={picker.setShowOngoingOnly}
             />
           )}
 

@@ -346,6 +346,12 @@ export interface CodexSessionInfo {
   file_size_bytes: number;
 }
 
+export interface SessionActivityUpdate {
+  path: string;
+  is_ongoing: boolean;
+  file_size_bytes: number;
+}
+
 export interface SettingsResponse {
   sessions_dir: string | null;
   default_dir: string;

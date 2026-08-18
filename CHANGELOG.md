@@ -4,6 +4,19 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.7] — 2026-08-18
+
+### Added
+
+- **Global active-session monitoring**. Track ongoing sessions across the entire sessions directory
+  with filesystem notifications and a low-frequency metadata reconciliation pass.
+- **Active-session filtering**. Switch the session picker between all sessions and sessions that
+  are currently running without hiding sessions from the navigation sidebar.
+- **Collapsible wider sidebar**. Expand the default session tree width and allow it to be collapsed
+  to a compact toggle.
+
+[0.4.7]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.7
+
 ## [0.4.6] — 2026-08-18
 
 ### Added

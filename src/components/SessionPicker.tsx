@@ -13,9 +13,11 @@ interface SessionPickerProps {
   sessions: CodexSessionInfo[];
   loading: boolean;
   searchQuery: string;
+  showOngoingOnly: boolean;
   selectedIndex: number;
   onSelectSession: (info: CodexSessionInfo) => void;
   onSearchChange: (q: string) => void;
+  onShowOngoingOnlyChange: (show: boolean) => void;
 }
 
 function groupByDate(
@@ -34,32 +36,58 @@ export function SessionPicker({
   sessions,
   loading,
   searchQuery,
+  showOngoingOnly,
   selectedIndex,
   onSelectSession,
   onSearchChange,
+  onShowOngoingOnlyChange,
 }: SessionPickerProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const selectedRef = useScrollToSelected(selectedIndex);
 
+  const visibleSessions = useMemo(
+    () => (showOngoingOnly ? sessions.filter((session) => session.is_ongoing) : sessions),
+    [sessions, showOngoingOnly],
+  );
   const totalTokens = useMemo(
-    () => sessions.reduce((acc, s) => acc + (s.total_tokens ?? 0), 0),
-    [sessions],
+    () => visibleSessions.reduce((acc, s) => acc + (s.total_tokens ?? 0), 0),
+    [visibleSessions],
   );
 
-  const dateGroups = groupByDate(sessions);
+  const dateGroups = groupByDate(visibleSessions);
   let flatIndex = 0;
 
   return (
     <div className="picker">
       <div className="picker__header">
-        <div className="picker__title">
-          Sessions
-          {totalTokens > 0 && (
-            <span className="picker__total-tokens">
-              <TokensIcon /> {formatTokens(totalTokens)} tok
-            </span>
-          )}
+        <div className="picker__title-row">
+          <div className="picker__title">
+            Sessions
+            {totalTokens > 0 && (
+              <span className="picker__total-tokens">
+                <TokensIcon /> {formatTokens(totalTokens)} tok
+              </span>
+            )}
+          </div>
+          <div className="picker__filter" role="group" aria-label="Session filter">
+            <button
+              type="button"
+              className={`picker__filter-btn${!showOngoingOnly ? " picker__filter-btn--active" : ""}`}
+              aria-pressed={!showOngoingOnly}
+              onClick={() => onShowOngoingOnlyChange(false)}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className={`picker__filter-btn${showOngoingOnly ? " picker__filter-btn--active" : ""}`}
+              aria-pressed={showOngoingOnly}
+              onClick={() => onShowOngoingOnlyChange(true)}
+            >
+              Active
+            </button>
+          </div>
         </div>
         <input
           ref={searchRef}
@@ -75,9 +103,13 @@ export function SessionPicker({
       <div ref={listRef} className="picker__list">
         {loading && <div className="picker__loading">Loading…</div>}
 
-        {!loading && sessions.length === 0 && (
+        {!loading && visibleSessions.length === 0 && (
           <div className="picker__empty">
-            {searchQuery ? "No matching sessions" : "No sessions found"}
+            {searchQuery
+              ? "No matching sessions"
+              : showOngoingOnly
+                ? "No active sessions"
+                : "No sessions found"}
           </div>
         )}
 

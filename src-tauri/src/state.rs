@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
+use crate::parser::activity::{collect_session_paths, ActivityTracker};
 use crate::parser::discover::CodexSessionInfo;
 use crate::parser::session::{
     page_session, CodexSession, IncrementalSession, SessionPageDirection, SessionRefresh,
@@ -27,6 +28,19 @@ const SESSIONS_CACHE_TTL: Duration = Duration::from_secs(2);
 const MAX_PARSED_SESSION_CACHE_ENTRIES: usize = 8;
 const MAX_PARSED_SESSION_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SessionActivityUpdate {
+    pub path: String,
+    pub is_ongoing: bool,
+    pub file_size_bytes: u64,
+}
+
+#[derive(Default)]
+pub struct ActivityReconciliation {
+    pub updates: Vec<SessionActivityUpdate>,
+    pub structure_changed: bool,
+}
+
 pub struct AppState {
     pub session_watcher: Mutex<Option<WatcherHandle>>,
     pub picker_watcher: Mutex<Option<WatcherHandle>>,
@@ -35,6 +49,7 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<SseEvent>,
     sessions_cache: Mutex<Option<SessionsCache>>,
     parsed_sessions: Mutex<HashMap<String, Arc<Mutex<IncrementalSession>>>>,
+    activity_trackers: Mutex<HashMap<String, ActivityTracker>>,
 }
 
 impl AppState {
@@ -48,6 +63,7 @@ impl AppState {
             event_tx,
             sessions_cache: Mutex::new(None),
             parsed_sessions: Mutex::new(HashMap::new()),
+            activity_trackers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -163,6 +179,12 @@ impl AppState {
     }
 
     pub fn set_watched_ongoing(&self, path: String, ongoing: bool) {
+        if let Ok(mut trackers) = self.activity_trackers.lock() {
+            if let Some(tracker) = trackers.get_mut(&path) {
+                tracker.set_ongoing(ongoing);
+                return;
+            }
+        }
         if let Ok(mut guard) = self.watched_session_ongoing.lock() {
             *guard = Some((path, ongoing));
         }
@@ -175,14 +197,99 @@ impl AppState {
     }
 
     pub fn apply_watched_ongoing(&self, sessions: &mut [CodexSessionInfo]) {
-        let guard = match self.watched_session_ongoing.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        if let Some((ref path, ongoing)) = *guard {
-            if let Some(s) = sessions.iter_mut().find(|s| s.path == *path) {
-                s.is_ongoing = ongoing;
+        let fallback = self
+            .watched_session_ongoing
+            .lock()
+            .ok()
+            .and_then(|guard| (*guard).clone());
+        if let Ok(trackers) = self.activity_trackers.lock() {
+            for session in sessions.iter_mut() {
+                if let Some(tracker) = trackers.get(&session.path) {
+                    let snapshot = tracker.snapshot();
+                    session.is_ongoing = snapshot.is_ongoing;
+                    session.file_size_bytes = snapshot.file_size_bytes;
+                } else if let Some((ref path, ongoing)) = fallback {
+                    if session.path == *path {
+                        session.is_ongoing = ongoing;
+                    }
+                }
             }
+        }
+    }
+
+    /// Seed the activity trackers from the initial full picker scan. The tracker stores only
+    /// event state and the current byte offset; it does not retain the transcript contents.
+    pub fn seed_session_activity(&self, sessions: &[CodexSessionInfo]) {
+        let Ok(mut trackers) = self.activity_trackers.lock() else {
+            return;
+        };
+        for session in sessions {
+            trackers.insert(session.path.clone(), ActivityTracker::from_info(session));
+        }
+    }
+
+    /// Reconcile all session paths using metadata and incrementally refresh only changed files.
+    /// A new or removed path marks the structure as changed so the frontend can perform one
+    /// normal picker refresh; ordinary appends are delivered as per-session activity updates.
+    pub fn reconcile_sessions_dir(
+        &self,
+        sessions_dir: &str,
+    ) -> Result<ActivityReconciliation, String> {
+        let paths = collect_session_paths(std::path::Path::new(sessions_dir));
+        let mut trackers = self.activity_trackers.lock().map_err(|e| e.to_string())?;
+        let mut result = ActivityReconciliation::default();
+
+        for path in &paths {
+            let key = path.to_string_lossy().to_string();
+            let before = trackers.get(&key).map(|tracker| tracker.snapshot());
+
+            let snapshot = if let Some(tracker) = trackers.get_mut(&key) {
+                match tracker.refresh() {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => continue,
+                }
+            } else {
+                result.structure_changed = true;
+                let Ok(tracker) = ActivityTracker::load(path) else {
+                    continue;
+                };
+                let snapshot = tracker.snapshot();
+                trackers.insert(key.clone(), tracker);
+                snapshot
+            };
+
+            if before != Some(snapshot) {
+                result.updates.push(SessionActivityUpdate {
+                    path: key,
+                    is_ongoing: snapshot.is_ongoing,
+                    file_size_bytes: snapshot.file_size_bytes,
+                });
+            }
+        }
+
+        let removed: Vec<String> = trackers
+            .iter()
+            .filter(|(_, tracker)| {
+                tracker
+                    .path()
+                    .starts_with(std::path::Path::new(sessions_dir))
+                    && !paths.contains(tracker.path())
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        if !removed.is_empty() {
+            result.structure_changed = true;
+            for path in removed {
+                trackers.remove(&path);
+            }
+        }
+
+        Ok(result)
+    }
+
+    pub fn invalidate_sessions_cache(&self) {
+        if let Ok(mut cache) = self.sessions_cache.lock() {
+            *cache = None;
         }
     }
 
@@ -197,6 +304,7 @@ impl AppState {
         }
         let path = std::path::Path::new(dir);
         let sessions = crate::parser::discover::discover_sessions(path)?;
+        self.seed_session_activity(&sessions);
         *cache = Some(SessionsCache {
             dir: dir.to_string(),
             cached_at: Instant::now(),
@@ -216,6 +324,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn make_state() -> AppState {
         AppState::new()
@@ -272,6 +381,7 @@ mod tests {
                     approval_mode: None,
                     history_base_thread_id: None,
                     file_size_bytes: 0,
+                    has_session_end: false,
                 }],
             });
         }
@@ -320,6 +430,7 @@ mod tests {
                     approval_mode: None,
                     history_base_thread_id: None,
                     file_size_bytes: 0,
+                    has_session_end: false,
                 }],
             });
         }
@@ -332,5 +443,62 @@ mod tests {
             result.is_empty(),
             "different dir must not return dir_a cached data"
         );
+    }
+
+    #[test]
+    fn activity_reconciliation_updates_only_the_changed_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let active_path = dir.path().join("rollout-active.jsonl");
+        let completed_path = dir.path().join("rollout-completed.jsonl");
+        let active_content = concat!(
+            r#"{"timestamp":"2026-08-18T12:00:00Z","type":"session_meta","payload":{"id":"active"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-18T12:00:01Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            "\n",
+        );
+        std::fs::write(&active_path, active_content).unwrap();
+        std::fs::write(
+            &completed_path,
+            concat!(
+                r#"{"timestamp":"2026-08-18T12:00:00Z","type":"session_meta","payload":{"id":"completed"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-08-18T12:00:01Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-08-18T12:00:02Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let state = make_state();
+        let initial = state
+            .discover_sessions_cached(dir.path().to_str().unwrap())
+            .unwrap();
+        assert_eq!(initial.len(), 2);
+        assert!(initial.iter().any(|session| session.is_ongoing));
+        assert!(initial.iter().any(|session| !session.is_ongoing));
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&active_path)
+            .unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"2026-08-18T12:00:02Z","type":"event_msg","payload":{{"type":"task_complete"}}}}"#
+        )
+        .unwrap();
+
+        let result = state
+            .reconcile_sessions_dir(dir.path().to_str().unwrap())
+            .unwrap();
+        assert!(!result.structure_changed);
+        assert_eq!(result.updates.len(), 1);
+        assert_eq!(result.updates[0].path, active_path.to_string_lossy());
+        assert!(!result.updates[0].is_ongoing);
+
+        let refreshed = state
+            .discover_sessions_cached(dir.path().to_str().unwrap())
+            .unwrap();
+        assert!(refreshed.iter().all(|session| !session.is_ongoing));
     }
 }

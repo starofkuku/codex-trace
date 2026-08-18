@@ -59,6 +59,10 @@ pub struct CodexSessionInfo {
     pub history_base_thread_id: Option<String>,
     /// Size of the rollout file on disk, in bytes.
     pub file_size_bytes: u64,
+    /// Internal activity-parser state. This is derived during discovery and is not part of the
+    /// frontend API; it lets the global watcher continue parsing from the current file offset.
+    #[serde(skip)]
+    pub(crate) has_session_end: bool,
 }
 
 /// Scan a sessions directory recursively for all rollout-*.jsonl files.
@@ -188,7 +192,7 @@ fn date_group_from_path(path: &Path) -> String {
 /// Streams the file line-by-line (decompressing zstd transparently) so peak
 /// memory stays bounded to a single line — session files can be hundreds of
 /// megabytes, and slurping every file into memory during discovery spiked RSS.
-fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
+pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
     let file_size_bytes = fs::metadata(path).ok()?.len();
     let reader = open_session_reader(path).ok()?;
     let mut lines = reader
@@ -557,6 +561,7 @@ fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
         approval_mode,
         history_base_thread_id,
         file_size_bytes,
+        has_session_end,
     })
 }
 

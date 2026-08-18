@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use crate::state::AppState;
 
 const WATCHER_DEBOUNCE: Duration = Duration::from_millis(1000);
+const ACTIVITY_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 
 fn run_debounce_loop(
     rx: std::sync::mpsc::Receiver<Result<notify::Event, notify::Error>>,
@@ -185,11 +186,46 @@ pub fn start_session_watcher(
     }
 }
 
+async fn reconcile_picker_activity(
+    sessions_dir: &str,
+    state: &Arc<AppState>,
+    app: &Option<AppHandle>,
+) {
+    let result = match tokio::task::spawn_blocking({
+        let state = state.clone();
+        let sessions_dir = sessions_dir.to_string();
+        move || state.reconcile_sessions_dir(&sessions_dir)
+    })
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) | Err(_) => return,
+    };
+
+    let structure_changed = result.structure_changed;
+    for update in result.updates {
+        if let Ok(json) = serde_json::to_string(&update) {
+            state.broadcast("session-activity", &json);
+        }
+        if let Some(app_handle) = app {
+            let _ = app_handle.emit("session-activity", &update);
+        }
+    }
+
+    if structure_changed {
+        // A structural change requires fresh picker metadata. Ordinary appends are represented by
+        // session-activity events and never cause the frontend to rescan every transcript.
+        state.invalidate_sessions_cache();
+        state.broadcast("picker-refresh", "{}");
+        if let Some(app_handle) = app {
+            let _ = app_handle.emit("picker-refresh", serde_json::json!({}));
+        }
+    }
+}
+
 /// Start watching the sessions directory for new/changed files.
-/// When changes are detected the watcher broadcasts a lightweight `picker-refresh`
-/// signal with no payload. Clients are responsible for fetching the updated
-/// session list via the `list_sessions` / `/api/sessions` endpoint, which uses
-/// a short-lived cache to coalesce concurrent re-fetches.
+/// Filesystem notifications provide low-latency updates; a five-second metadata-only
+/// reconciliation pass repairs missed events without rereading unchanged transcripts.
 pub fn start_picker_watcher(
     sessions_dir: String,
     state: Arc<AppState>,
@@ -201,6 +237,7 @@ pub fn start_picker_watcher(
 
     let signal_tx_clone = signal_tx.clone();
     let sessions_dir_thread = sessions_dir.clone();
+    let sessions_dir_async = sessions_dir.clone();
 
     std::thread::spawn(move || {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -228,19 +265,18 @@ pub fn start_picker_watcher(
     });
 
     tokio::spawn(async move {
+        let mut reconcile_interval = tokio::time::interval(ACTIVITY_RECONCILE_INTERVAL);
+        reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 _ = stop_rx.recv() => break,
                 Some(()) = signal_rx.recv() => {
-                    // Send a lightweight signal — no session data embedded.
-                    // Clients call list_sessions to fetch fresh data; the
-                    // server-side cache coalesces concurrent requests.
-                    state.broadcast("picker-refresh", "{}");
-
-                    if let Some(ref app_handle) = app {
-                        let _ = app_handle.emit("picker-refresh", serde_json::json!({}));
-                    }
-                }
+                    reconcile_picker_activity(&sessions_dir_async, &state, &app).await;
+                },
+                _ = reconcile_interval.tick() => {
+                    reconcile_picker_activity(&sessions_dir_async, &state, &app).await;
+                },
             }
         }
     });

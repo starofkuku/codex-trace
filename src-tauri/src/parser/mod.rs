@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod cache;
 pub mod compression;
 pub mod discover;
