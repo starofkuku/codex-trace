@@ -2,11 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   contextRemainingPercent,
   formatDuration,
+  formatFileSize,
   formatTokens,
   shortPath,
   timeAgo,
   truncate,
 } from "./format";
+
+describe("formatFileSize", () => {
+  it("formats bytes and binary units", () => {
+    expect(formatFileSize(0)).toBe("0 B");
+    expect(formatFileSize(1023)).toBe("1023 B");
+    expect(formatFileSize(1024)).toBe("1.0 KB");
+    expect(formatFileSize(1_572_864)).toBe("1.5 MB");
+    expect(formatFileSize(100 * 1024 * 1024)).toBe("100 MB");
+  });
+});
 
 describe("formatDuration", () => {
   it("returns '< 1ms' for zero", () => {

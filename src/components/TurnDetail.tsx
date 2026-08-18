@@ -7,6 +7,7 @@ import { MarkdownRenderer } from "./MarkdownRenderer";
 import { shortModel, formatExactTime } from "../lib/format";
 import { getContextColor, getModelColor } from "../lib/theme";
 import { contextRemainingPercent, formatTokens, formatDuration } from "../../shared/format";
+import { TokenBar } from "./TokenBar";
 
 interface TurnDetailProps {
   turn: CodexTurn;
@@ -30,6 +31,7 @@ export function TurnDetail({
   );
   const reasoning = turn.agent_messages.filter((m) => m.is_reasoning);
   const finalAnswer = turn.agent_messages.find((m) => m.phase === "final_answer");
+  const tokenInfo = turn.total_tokens;
 
   // Interleave commentary messages with tool calls by their stream order, so each tool call
   // shows up inline where it actually happened instead of being dumped at the end of the turn.
@@ -51,10 +53,7 @@ export function TurnDetail({
   const modelColor = turn.model ? getModelColor(turn.model) : undefined;
 
   const metaParts: string[] = [];
-  if (turn.total_tokens?.total_tokens)
-    metaParts.push(`${formatTokens(turn.total_tokens.total_tokens)} tok`);
   if (turn.duration_ms) metaParts.push(formatDuration(turn.duration_ms));
-  const tokenInfo = turn.total_tokens;
   const contextLeftPercent = tokenInfo
     ? contextRemainingPercent(tokenInfo.context_window_tokens, tokenInfo.model_context_window)
     : null;
@@ -103,6 +102,13 @@ export function TurnDetail({
 
       <div className="turn-detail__body">
         <div className="turn-detail__content">
+          {tokenInfo && (
+            <div className="turn-detail__token-summary">
+              <div className="turn-detail__section-label">Token usage</div>
+              <TokenBar tokens={tokenInfo} />
+            </div>
+          )}
+
           {turn.error && (
             <div className="turn-detail__section turn-detail__section--error">
               <div className="turn-detail__section-label">Error</div>

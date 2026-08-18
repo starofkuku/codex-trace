@@ -47,7 +47,7 @@ export function App() {
     addAll: addAllTools,
   } = useToggleSet();
 
-  const { loadSession } = session;
+  const { loadSession, loadMore } = session;
   const { discoverSessions, updateSessionOngoing } = picker;
 
   // Auto-discover sessions on mount
@@ -83,6 +83,14 @@ export function App() {
     setSelectedTurn(index);
     setView("detail");
   }, []);
+
+  const handleLoadMore = useCallback(async () => {
+    const direction = session.session?.pagination?.direction;
+    const added = await loadMore();
+    if (direction === "backward" && added > 0) {
+      setSelectedTurn((index) => index + added);
+    }
+  }, [loadMore, session.session?.pagination?.direction]);
 
   const handleToggleDate = useCallback((dateGroup: string) => {
     setCollapsedDates((prev) => {
@@ -220,6 +228,9 @@ export function App() {
             <TurnList
               turns={turns}
               selectedIndex={selectedTurn}
+              pagination={session.session.pagination}
+              loadingMore={session.loadingMore}
+              onLoadMore={handleLoadMore}
               onSelectTurn={(i) => {
                 setSelectedTurn(i);
                 setView("detail");

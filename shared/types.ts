@@ -95,6 +95,8 @@ export interface CollabSpawn {
 }
 
 export type ToolKind =
+  /** Codex code mode's outer `exec` call; actual operations are nested below it. */
+  | "code_mode"
   | "exec_command"
   | "mcp_tool"
   | "patch_apply"
@@ -117,12 +119,25 @@ export type ToolKind =
   | "agent_plugin"
   | "unknown";
 
+export interface NestedToolCall {
+  name: string;
+  kind: ToolKind;
+  arguments: Record<string, unknown>;
+  input_text: string | null;
+  command: string[] | null;
+  cwd: string | null;
+  mcp_server: string | null;
+  mcp_tool: string | null;
+}
+
 export interface CodexToolCall {
   call_id: string;
   kind: ToolKind;
   name: string;
   arguments: Record<string, unknown>;
   input_text: string | null;
+  /** Present for Code Mode calls; optional for sessions/caches produced before this field. */
+  nested_tool_calls?: NestedToolCall[];
   output: string | null;
   exit_code: number | null;
   command: string[] | null;
@@ -199,6 +214,17 @@ export interface CodexTurn {
   warnings?: string[];
 }
 
+export type SessionPageDirection = "forward" | "backward";
+
+export interface SessionPagination {
+  direction: SessionPageDirection;
+  next_cursor: number | null;
+  has_more: boolean;
+  total_turns: number;
+  source_size_bytes: number;
+  page_bytes: number;
+}
+
 /**
  * Session JSONL response_item types that appear only in archive sessions recorded before
  * Codex v0.140.0 (PR #27801 removed the experimental /realtime voice subsystem from the TUI):
@@ -252,6 +278,26 @@ export interface CodexSession {
    * the whole rollout file as a continuation of another paginated thread's history.
    * Null for legacy-history sessions or paginated threads with no inherited prefix. */
   history_base_thread_id: string | null;
+  /** Present when only a page of turns was returned for a large session. */
+  pagination?: SessionPagination | null;
+}
+
+export interface SessionPatch {
+  path: string;
+  updated_turns: CodexTurn[];
+  total_turns: number;
+  is_ongoing: boolean;
+  total_tokens: TokenInfo | null;
+  thread_name: string | null;
+  spawned_worker_ids: string[];
+  has_missing_spawn_metadata: boolean;
+  source_size_bytes: number;
+}
+
+export interface SessionUpdatePayload {
+  kind: "full" | "patch";
+  session: CodexSession | null;
+  patch: SessionPatch | null;
 }
 
 export interface CodexSessionInfo {
@@ -296,6 +342,8 @@ export interface CodexSessionInfo {
    * the whole rollout file as a continuation of another paginated thread's history.
    * Null for legacy-history sessions or paginated threads with no inherited prefix. */
   history_base_thread_id: string | null;
+  /** Size of the rollout file on disk, in bytes. */
+  file_size_bytes: number;
 }
 
 export interface SettingsResponse {

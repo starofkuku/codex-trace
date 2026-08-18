@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
-use crate::parser::session::parse_session;
 use crate::state::AppState;
 
 const WATCHER_DEBOUNCE: Duration = Duration::from_millis(1000);
@@ -58,7 +57,9 @@ impl WatcherHandle {
 
 #[derive(Clone, serde::Serialize)]
 struct SessionUpdatePayload {
-    session: crate::parser::session::CodexSession,
+    kind: &'static str,
+    session: Option<crate::parser::session::CodexSession>,
+    patch: Option<crate::parser::session::SessionPatch>,
 }
 
 /// True for `rollout-*.jsonl` and `rollout-*.jsonl.zst` files — Codex's background
@@ -122,25 +123,50 @@ pub fn start_session_watcher(
 
     let path_for_rebuild = path.clone();
     tokio::spawn(async move {
-        let mut prev_ongoing = false;
-
         loop {
             tokio::select! {
                 _ = stop_rx.recv() => break,
                 Some(()) = signal_rx.recv() => {
-                    let p = std::path::Path::new(&path_for_rebuild);
-                    let Some(resolved) = crate::parser::compression::resolve_rollout_path(p) else {
-                        continue;
-                    };
-                    let session = match parse_session(&resolved) {
-                        Ok(s) => s,
-                        Err(_) => continue,
+                    let refresh = match tokio::task::spawn_blocking({
+                        let state = state.clone();
+                        let path = path_for_rebuild.clone();
+                        move || state.refresh_session(&path)
+                    }).await {
+                        Ok(Ok(refresh)) => refresh,
+                        Ok(Err(_)) | Err(_) => continue,
                     };
 
-                    let ongoing = session.is_ongoing;
-                    state.set_watched_ongoing(path_for_rebuild.clone(), ongoing);
+                    let payload = match refresh {
+                        crate::parser::session::SessionRefresh::Unchanged => continue,
+                        crate::parser::session::SessionRefresh::Full {
+                            session,
+                            source_size_bytes,
+                        } => {
+                            let session = crate::parser::session::page_session(
+                                session.as_ref(),
+                                crate::parser::session::SessionPageDirection::Backward,
+                                None,
+                                None,
+                                source_size_bytes,
+                            )
+                            .unwrap_or(*session);
+                            state.set_watched_ongoing(path_for_rebuild.clone(), session.is_ongoing);
+                            SessionUpdatePayload {
+                                kind: "full",
+                                session: Some(session),
+                                patch: None,
+                            }
+                        }
+                        crate::parser::session::SessionRefresh::Patch(patch) => {
+                            state.set_watched_ongoing(path_for_rebuild.clone(), patch.is_ongoing);
+                            SessionUpdatePayload {
+                                kind: "patch",
+                                session: None,
+                                patch: Some(patch),
+                            }
+                        }
+                    };
 
-                    let payload = SessionUpdatePayload { session };
                     if let Ok(json) = serde_json::to_string(&payload) {
                         state.broadcast("session-update", &json);
                     }
@@ -148,12 +174,9 @@ pub fn start_session_watcher(
                     if let Some(ref app_handle) = app {
                         let _ = app_handle.emit("session-update", payload);
                     }
-
-                    prev_ongoing = ongoing;
                 }
             }
         }
-        let _ = prev_ongoing;
     });
 
     WatcherHandle {

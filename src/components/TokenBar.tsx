@@ -3,9 +3,20 @@ import { formatTokens } from "../../shared/format";
 
 interface TokenBarProps {
   tokens: TokenInfo;
+  className?: string;
 }
 
-export function TokenBar({ tokens }: TokenBarProps) {
+export function tokenBreakdownTitle(tokens: TokenInfo): string {
+  return [
+    `Input: ${formatTokens(tokens.input_tokens)}`,
+    `Cached input: ${formatTokens(tokens.cached_input_tokens)}`,
+    `Output: ${formatTokens(tokens.output_tokens)}`,
+    `Reasoning output: ${formatTokens(tokens.reasoning_output_tokens)}`,
+    `Total: ${formatTokens(tokens.total_tokens)}`,
+  ].join("\n");
+}
+
+export function TokenBar({ tokens, className }: TokenBarProps) {
   const {
     input_tokens,
     cached_input_tokens,
@@ -19,8 +30,8 @@ export function TokenBar({ tokens }: TokenBarProps) {
 
   return (
     <div
-      className="token-bar"
-      title={`${formatTokens(total_tokens)} / ${formatTokens(model_context_window)} tokens`}
+      className={className ? `token-bar ${className}` : "token-bar"}
+      title={tokenBreakdownTitle(tokens)}
     >
       <div className="token-bar__track">
         {model_context_window > 0 && (
@@ -28,18 +39,15 @@ export function TokenBar({ tokens }: TokenBarProps) {
         )}
       </div>
       <div className="token-bar__stats">
-        <span style={{ color: "var(--token-input)" }}>in {formatTokens(input_tokens)}</span>
-        {cached_input_tokens > 0 && (
-          <span style={{ color: "var(--token-cached)" }}>
-            cache {formatTokens(cached_input_tokens)}
-          </span>
-        )}
-        <span style={{ color: "var(--token-output)" }}>out {formatTokens(output_tokens)}</span>
-        {reasoning_output_tokens > 0 && (
-          <span style={{ color: "var(--token-reasoning)" }}>
-            think {formatTokens(reasoning_output_tokens)}
-          </span>
-        )}
+        <span className="token-bar__total">total {formatTokens(total_tokens)}</span>
+        <span style={{ color: "var(--token-input)" }}>input {formatTokens(input_tokens)}</span>
+        <span style={{ color: "var(--token-cached)" }}>
+          cached {formatTokens(cached_input_tokens)}
+        </span>
+        <span style={{ color: "var(--token-output)" }}>output {formatTokens(output_tokens)}</span>
+        <span style={{ color: "var(--token-reasoning)" }}>
+          reasoning {formatTokens(reasoning_output_tokens)}
+        </span>
       </div>
     </div>
   );

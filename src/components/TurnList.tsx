@@ -1,11 +1,12 @@
 import { useState, useCallback, useRef } from "react";
-import type { CodexTurn } from "../../shared/types";
+import type { CodexTurn, SessionPagination } from "../../shared/types";
 import { formatDuration, formatTokens } from "../../shared/format";
 import { formatExactTime } from "../lib/format";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { useScrollToSelected } from "../hooks/useScrollToSelected";
 import { OngoingDots } from "./OngoingDots";
 import {
+  BackIcon,
   UserIcon,
   CodexIcon,
   ForwardIcon,
@@ -14,11 +15,15 @@ import {
   DurationIcon,
   ThinkingIcon,
 } from "./Icons";
+import { tokenBreakdownTitle } from "./TokenBar";
 
 interface TurnListProps {
   turns: CodexTurn[];
   selectedIndex: number;
   onSelectTurn: (index: number) => void;
+  pagination?: SessionPagination | null;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 function statusIcon(status: CodexTurn["status"]): string {
@@ -28,7 +33,14 @@ function statusIcon(status: CodexTurn["status"]): string {
   return "!";
 }
 
-export function TurnList({ turns, selectedIndex, onSelectTurn }: TurnListProps) {
+export function TurnList({
+  turns,
+  selectedIndex,
+  onSelectTurn,
+  pagination,
+  loadingMore = false,
+  onLoadMore,
+}: TurnListProps) {
   const listRef = useAutoScroll<HTMLDivElement>(turns.length);
   const selectedRef = useScrollToSelected(selectedIndex);
   const [expandedUsers, setExpandedUsers] = useState<Set<number>>(new Set());
@@ -74,6 +86,16 @@ export function TurnList({ turns, selectedIndex, onSelectTurn }: TurnListProps) 
 
   return (
     <div ref={listRef} className="message-list">
+      {pagination?.has_more && pagination.direction === "backward" && onLoadMore && (
+        <button
+          type="button"
+          className="message-list__load-more"
+          onClick={onLoadMore}
+          disabled={loadingMore}
+        >
+          <BackIcon /> {loadingMore ? "Loading older turns…" : "Load older turns"}
+        </button>
+      )}
       {turns.map((turn, i) => {
         const isSelected = i === selectedIndex;
         const userMsg = turn.user_message ?? "";
@@ -171,7 +193,10 @@ export function TurnList({ turns, selectedIndex, onSelectTurn }: TurnListProps) 
                     </span>
                   )}
                   {(turn.total_tokens?.total_tokens ?? 0) > 0 && (
-                    <span className="message__stat">
+                    <span
+                      className="message__stat message__stat--tokens"
+                      title={tokenBreakdownTitle(turn.total_tokens!)}
+                    >
                       <span className="message__stat-icon">
                         <TokensIcon />
                       </span>
@@ -209,6 +234,16 @@ export function TurnList({ turns, selectedIndex, onSelectTurn }: TurnListProps) 
         );
       })}
       {turns.length === 0 && <div className="message-list__empty">No turns in this session.</div>}
+      {pagination?.has_more && pagination.direction === "forward" && onLoadMore && (
+        <button
+          type="button"
+          className="message-list__load-more"
+          onClick={onLoadMore}
+          disabled={loadingMore}
+        >
+          {loadingMore ? "Loading newer turns…" : "Load newer turns"} <ForwardIcon />
+        </button>
+      )}
     </div>
   );
 }

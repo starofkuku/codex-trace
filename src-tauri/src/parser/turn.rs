@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -189,54 +190,81 @@ impl CodexTurn {
     }
 }
 
-/// Build turns from a sequence of raw entries.
-/// Handles both new format (task_started/task_complete) and old format (user_message-bounded).
-pub fn build_turns(entries: &[RawEntry]) -> Vec<CodexTurn> {
-    let mut turns: indexmap::IndexMap<String, CodexTurn> = indexmap::IndexMap::new();
-    let mut current_turn_id: Option<String> = None;
-    let mut tool_builders: HashMap<String, ToolCallBuilder> = HashMap::new();
+/// Stateful turn parser used by both full-session parsing and live append parsing.
+///
+/// The parser keeps tool-call builders and the current turn between batches. This lets the
+/// watcher process only complete JSONL lines appended since the previous file size while
+/// preserving the same cross-entry associations as [`build_turns`].
+#[derive(Debug, Clone)]
+pub struct IncrementalTurnParser {
+    turns: IndexMap<String, CodexTurn>,
+    current_turn_id: Option<String>,
+    tool_builders: HashMap<String, ToolCallBuilder>,
+    has_task_started: bool,
+    synthetic_turn_counter: u32,
+    call_order: HashMap<String, usize>,
+}
 
-    // Detect format: new (has task_started) vs old (user_message-bounded)
-    let has_task_started = entries.iter().any(|e| {
-        e.entry_type == "event_msg"
-            && e.payload.get("type").and_then(|t| t.as_str()) == Some("task_started")
-    });
-
-    let mut synthetic_turn_counter = 0u32;
-    // Position of each tool call's first appearance in the raw stream, keyed by call_id.
-    // Gives tool calls the same kind of order index as agent messages so the two can be
-    // interleaved chronologically in the UI.
-    let mut call_order: HashMap<String, usize> = HashMap::new();
-
-    for (index, entry) in entries.iter().enumerate() {
-        if let Some(call_id) = call_id_of(entry) {
-            call_order.entry(call_id).or_insert(index);
+impl IncrementalTurnParser {
+    pub fn new(has_task_started: bool) -> Self {
+        Self {
+            turns: IndexMap::new(),
+            current_turn_id: None,
+            tool_builders: HashMap::new(),
+            has_task_started,
+            synthetic_turn_counter: 0,
+            call_order: HashMap::new(),
         }
+    }
+
+    pub fn from_entries(entries: &[RawEntry]) -> Self {
+        let has_task_started = entries.iter().any(|e| {
+            e.entry_type == "event_msg"
+                && e.payload.get("type").and_then(|t| t.as_str()) == Some("task_started")
+        });
+        let mut parser = Self::new(has_task_started);
+        for (index, entry) in entries.iter().enumerate() {
+            parser.push(entry, index);
+        }
+        parser
+    }
+
+    /// Feed one parsed JSONL entry into the persistent parser state.
+    pub fn push(&mut self, entry: &RawEntry, index: usize) {
+        if entry.entry_type == "event_msg"
+            && entry.payload.get("type").and_then(|t| t.as_str()) == Some("task_started")
+        {
+            self.has_task_started = true;
+        }
+
+        if let Some(call_id) = call_id_of(entry) {
+            self.call_order.entry(call_id).or_insert(index);
+        }
+
         match entry.entry_type.as_str() {
-            "event_msg" => {
-                handle_event_msg(
-                    entry,
-                    &mut turns,
-                    &mut current_turn_id,
-                    &mut tool_builders,
-                    has_task_started,
-                    &mut synthetic_turn_counter,
-                    index,
-                );
-            }
+            "event_msg" => handle_event_msg(
+                entry,
+                &mut self.turns,
+                &mut self.current_turn_id,
+                &mut self.tool_builders,
+                self.has_task_started,
+                &mut self.synthetic_turn_counter,
+                index,
+            ),
             "response_item"
             | "function_call"
             | "function_call_output"
             | "message"
-            | "reasoning" => {
-                handle_response_item(entry, &mut turns, &current_turn_id, &mut tool_builders);
-            }
-            "turn_context" => {
-                handle_turn_context(entry, &mut turns, &current_turn_id);
-            }
+            | "reasoning" => handle_response_item(
+                entry,
+                &mut self.turns,
+                &self.current_turn_id,
+                &mut self.tool_builders,
+            ),
+            "turn_context" => handle_turn_context(entry, &mut self.turns, &self.current_turn_id),
             "compacted" => {
-                if let Some(ref tid) = current_turn_id {
-                    if let Some(turn) = turns.get_mut(tid) {
+                if let Some(ref tid) = self.current_turn_id {
+                    if let Some(turn) = self.turns.get_mut(tid) {
                         turn.has_compaction = true;
                     }
                 }
@@ -245,23 +273,37 @@ pub fn build_turns(entries: &[RawEntry]) -> Vec<CodexTurn> {
         }
     }
 
-    // Finalize all tool builders
-    for (turn_id, mut builder) in tool_builders {
-        builder.drain_pending();
-        if let Some(turn) = turns.get_mut(&turn_id) {
-            // Record each call's stream position, parallel to tool_calls. Calls with no
-            // recorded position (should not happen for well-formed sessions) sort last.
-            for tc in &builder.finalized {
-                let order = call_order.get(&tc.call_id).copied().unwrap_or(usize::MAX);
-                turn.tool_call_orders.push(order);
-            }
-            turn.tool_calls.extend(builder.finalized);
-        }
-    }
+    /// Return a stable snapshot without consuming pending parser state.
+    pub fn snapshot(&self) -> Vec<CodexTurn> {
+        let mut turns = self.turns.clone();
 
-    let mut result: Vec<CodexTurn> = turns.into_values().collect();
-    result.sort_by_key(|t| t.started_at.unwrap_or(0));
-    result
+        // Finalizing a clone exposes pending calls in the live turn without changing the
+        // parser state. The next append can therefore continue the same call normally.
+        for (turn_id, mut builder) in self.tool_builders.clone() {
+            builder.drain_pending();
+            if let Some(turn) = turns.get_mut(&turn_id) {
+                for tc in &builder.finalized {
+                    let order = self
+                        .call_order
+                        .get(&tc.call_id)
+                        .copied()
+                        .unwrap_or(usize::MAX);
+                    turn.tool_call_orders.push(order);
+                }
+                turn.tool_calls.extend(builder.finalized);
+            }
+        }
+
+        let mut result: Vec<CodexTurn> = turns.into_values().collect();
+        result.sort_by_key(|t| t.started_at.unwrap_or(0));
+        result
+    }
+}
+
+/// Build turns from a sequence of raw entries.
+/// Handles both new format (task_started/task_complete) and old format (user_message-bounded).
+pub fn build_turns(entries: &[RawEntry]) -> Vec<CodexTurn> {
+    IncrementalTurnParser::from_entries(entries).snapshot()
 }
 
 /// Extract a tool call's `call_id` from a raw entry, checking both the parsed payload and the
@@ -349,9 +391,7 @@ fn handle_event_msg(
             });
             turns.insert(turn_id.clone(), turn);
             *current_turn_id = Some(turn_id.clone());
-            let builder = tool_builders
-                .entry(turn_id)
-                .or_insert_with(ToolCallBuilder::new);
+            let builder = tool_builders.entry(turn_id).or_default();
             // Codex v0.141.0+ (PRs #27365, #27371): parse dynamic_tools and build a tool
             // registry so namespaced MCP/connector tools can be classified correctly.
             let registry = parse_dynamic_tools(payload);
@@ -384,9 +424,7 @@ fn handle_event_msg(
                 turn.user_message = Some(message.clone());
                 turns.insert(turn_id.clone(), turn);
                 *current_turn_id = Some(turn_id.clone());
-                tool_builders
-                    .entry(turn_id)
-                    .or_insert_with(ToolCallBuilder::new);
+                tool_builders.entry(turn_id).or_default();
             } else if let Some(ref tid) = current_turn_id {
                 if let Some(turn) = turns.get_mut(tid) {
                     if turn.user_message.is_none() {
@@ -621,36 +659,28 @@ fn handle_event_msg(
 
         "exec_command_end" => {
             if let Some(ref tid) = current_turn_id {
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.finalize_exec(msg_type, payload);
             }
         }
 
         "mcp_tool_call_end" => {
             if let Some(ref tid) = current_turn_id {
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.finalize_mcp(msg_type, payload);
             }
         }
 
         "patch_apply_end" => {
             if let Some(ref tid) = current_turn_id {
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.finalize_patch(msg_type, payload);
             }
         }
 
         "web_search_end" => {
             if let Some(ref tid) = current_turn_id {
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.add_web_search(msg_type, payload);
             }
         }
@@ -691,36 +721,28 @@ fn handle_event_msg(
                     });
                 }
 
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.finalize_spawn(msg_type, payload);
             }
         }
 
         "collab_waiting_end" => {
             if let Some(ref tid) = current_turn_id {
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.finalize_wait(msg_type, payload);
             }
         }
 
         "collab_close_end" => {
             if let Some(ref tid) = current_turn_id {
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.finalize_close(msg_type, payload);
             }
         }
 
         other if other.ends_with("_end") => {
             if let Some(ref tid) = current_turn_id {
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.finalize_unknown_end(other, payload);
             }
         }
@@ -731,9 +753,7 @@ fn handle_event_msg(
         // stable v0.136.0 fields so both old and new payloads deserialize correctly.
         "shell_hook_output" => {
             if let Some(ref tid) = current_turn_id {
-                let builder = tool_builders
-                    .entry(tid.clone())
-                    .or_insert_with(ToolCallBuilder::new);
+                let builder = tool_builders.entry(tid.clone()).or_default();
                 builder.finalize_shell_hook(payload);
             }
         }
@@ -932,9 +952,7 @@ fn handle_response_item(
         None => return,
     };
 
-    let builder = tool_builders
-        .entry(tid.to_string())
-        .or_insert_with(ToolCallBuilder::new);
+    let builder = tool_builders.entry(tid.to_string()).or_default();
 
     match item_type {
         "function_call" => {
@@ -1021,9 +1039,10 @@ fn handle_response_item(
 
         "custom_tool_call_output" => {
             let call_id = str_field(payload, "call_id");
-            // output field is a JSON string: {"output":"...","metadata":{"exit_code":N,...}}
-            let raw_output = payload.get("output").and_then(|v| v.as_str()).unwrap_or("");
-            let output = serde_json::from_str::<Value>(raw_output)
+            // The output is either the legacy JSON string or the current structured content
+            // array (for example [{"type":"input_text","text":"..."}]).
+            let raw_output = response_item_output_text(payload.get("output"));
+            let output = serde_json::from_str::<Value>(&raw_output)
                 .ok()
                 .and_then(|v| {
                     v.get("output")
@@ -1031,7 +1050,7 @@ fn handle_response_item(
                         .map(|s| s.to_string())
                 })
                 .unwrap_or_else(|| raw_output.to_string());
-            let exit_code = serde_json::from_str::<Value>(raw_output)
+            let exit_code = serde_json::from_str::<Value>(&raw_output)
                 .ok()
                 .and_then(|v| {
                     v.get("metadata")
@@ -1264,8 +1283,7 @@ fn handle_response_item(
                 // Current Codex emits both commentary and final assistant messages as
                 // response items. Only an unphased legacy message or an explicit final answer
                 // is the turn's final answer; commentary is represented by item_completed.
-                if phase.map_or(true, |phase| phase == "final_answer")
-                    && turn.final_answer.is_none()
+                if (phase.is_none() || phase == Some("final_answer")) && turn.final_answer.is_none()
                 {
                     let text = extract_item_content(payload);
                     if !text.is_empty() {
@@ -1276,6 +1294,18 @@ fn handle_response_item(
         }
 
         _ => {}
+    }
+}
+
+fn response_item_output_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
     }
 }
 
@@ -1676,7 +1706,17 @@ mod tests {
         assert_eq!(turns[0].tool_calls.len(), 1);
         let tool = &turns[0].tool_calls[0];
         assert_eq!(tool.name, "exec");
+        assert_eq!(tool.kind, ToolKind::CodeMode);
         assert_eq!(tool.duration_secs, Some(2.5));
+        assert_eq!(tool.nested_tool_calls.len(), 1);
+        assert_eq!(tool.nested_tool_calls[0].name, "exec_command");
+        assert_eq!(
+            tool.nested_tool_calls[0]
+                .command
+                .as_deref()
+                .map(|command| command.to_vec()),
+            Some(vec!["echo hello".to_string()])
+        );
     }
 
     #[test]

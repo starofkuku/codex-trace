@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::compression::read_session_file;
+use super::compression::{read_session_file, resolve_rollout_path};
 use super::entry::{extract_session_id, RawEntry};
 use super::toolcall::ToolKind;
-use super::turn::{build_turns, CodexTurn, TokenInfo, TurnStatus};
+use super::turn::{build_turns, CodexTurn, IncrementalTurnParser, TokenInfo, TurnStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitInfo {
@@ -48,6 +49,48 @@ pub struct CodexSession {
     /// marks the whole rollout file as a continuation of another paginated thread's history.
     /// Null for legacy-history sessions or paginated threads with no inherited prefix.
     pub history_base_thread_id: Option<String>,
+    /// Present when this response contains only one page of turns from a large session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pagination: Option<SessionPagination>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionPageDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionPagination {
+    pub direction: SessionPageDirection,
+    pub next_cursor: Option<usize>,
+    pub has_more: bool,
+    pub total_turns: usize,
+    pub source_size_bytes: u64,
+    pub page_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionPatch {
+    pub path: String,
+    pub updated_turns: Vec<CodexTurn>,
+    pub total_turns: usize,
+    pub is_ongoing: bool,
+    pub total_tokens: Option<TokenInfo>,
+    pub thread_name: Option<String>,
+    pub spawned_worker_ids: Vec<String>,
+    pub has_missing_spawn_metadata: bool,
+    pub source_size_bytes: u64,
+}
+
+pub enum SessionRefresh {
+    Unchanged,
+    Full {
+        session: Box<CodexSession>,
+        source_size_bytes: u64,
+    },
+    Patch(SessionPatch),
 }
 
 /// Parse a Codex JSONL session file into a CodexSession.
@@ -75,6 +118,75 @@ fn parse_session_inner(
         .filter_map(RawEntry::parse)
         .collect();
 
+    let session = build_session_metadata(path, &entries);
+
+    // Build turns from remaining entries
+    let turns = build_turns(&entries);
+
+    let session = populate_session(path, &entries, turns, session, visited);
+
+    visited.remove(&canonical_path);
+    Ok(session)
+}
+
+fn populate_session(
+    path: &Path,
+    entries: &[RawEntry],
+    mut turns: Vec<CodexTurn>,
+    mut session: CodexSession,
+    visited: &mut HashSet<PathBuf>,
+) -> CodexSession {
+    let has_session_end = entries.iter().any(|e| e.entry_type == "session_end");
+    let turn_ongoing = turns
+        .last()
+        .map(|t| t.status == super::turn::TurnStatus::Ongoing)
+        .unwrap_or(false);
+    let file_fresh = fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|mt| {
+            SystemTime::now()
+                .duration_since(mt)
+                .map(|e| e.as_secs() <= 60)
+                .unwrap_or(true)
+        })
+        .unwrap_or(true);
+
+    if turn_ongoing && (!file_fresh || has_session_end) {
+        if let Some(last) = turns.last_mut() {
+            last.status = TurnStatus::Aborted;
+        }
+    }
+
+    let has_missing_spawn_metadata = turns.iter().any(|t| {
+        t.tool_calls
+            .iter()
+            .any(|tc| tc.kind == ToolKind::SpawnAgent && tc.status == "unknown")
+    });
+
+    embed_worker_sessions(path, &mut turns, visited);
+
+    session.turns = turns;
+    session.thread_name = session
+        .turns
+        .iter()
+        .rev()
+        .find_map(|t| t.thread_name.clone());
+    session.spawned_worker_ids = session
+        .turns
+        .iter()
+        .flat_map(|t| t.collab_spawns.iter().map(|s| s.new_session_id.clone()))
+        .collect();
+    session.total_tokens = session
+        .turns
+        .iter()
+        .rev()
+        .find_map(|t| t.total_tokens.clone());
+    session.is_ongoing = !has_session_end && turn_ongoing && file_fresh;
+    session.has_missing_spawn_metadata = has_missing_spawn_metadata;
+    session
+}
+
+fn build_session_metadata(path: &Path, entries: &[RawEntry]) -> CodexSession {
     let mut session = CodexSession {
         id: String::new(),
         timestamp: String::new(),
@@ -94,10 +206,10 @@ fn parse_session_inner(
         is_headless: false,
         has_missing_spawn_metadata: false,
         history_base_thread_id: None,
+        pagination: None,
     };
 
-    // Parse session_meta from first matching entry
-    for entry in &entries {
+    for entry in entries {
         match entry.entry_type.as_str() {
             "session_meta" => {
                 parse_session_meta_new(&mut session, &entry.payload, &entry.raw);
@@ -111,76 +223,408 @@ fn parse_session_inner(
         }
     }
 
-    // Check for explicit session_end marker (Codex v0.128.0+).
-    // When present the session is definitively closed regardless of file freshness.
-    let has_session_end = entries.iter().any(|e| e.entry_type == "session_end");
+    session
+}
 
-    // Build turns from remaining entries
-    let mut turns = build_turns(&entries);
+pub const FULL_SESSION_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
+pub const DEFAULT_SESSION_PAGE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_SESSION_PAGE_BYTES: usize = 64 * 1024 * 1024;
 
-    // Extract thread_name from last thread_name_updated
-    let thread_name = turns.iter().rev().find_map(|t| t.thread_name.clone());
+#[cfg(unix)]
+fn file_identity(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
 
-    // Collect spawned_worker_ids from all turns
-    let spawned_worker_ids: Vec<String> = turns
-        .iter()
-        .flat_map(|t| t.collab_spawns.iter().map(|s| s.new_session_id.clone()))
-        .collect();
+    Some((metadata.dev(), metadata.ino()))
+}
 
-    // Determine total tokens from last turn's token info
-    let total_tokens = turns.iter().rev().find_map(|t| t.total_tokens.clone());
+#[cfg(windows)]
+fn file_identity(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::windows::fs::MetadataExt;
 
-    // Determine is_ongoing: last turn must be Ongoing AND file must have been
-    // modified within 60 seconds (same threshold as source repo). Sessions older
-    // than that have no live CLI writing to them — task_complete was simply missed
-    // (crash, kill, older CLI that never emitted the event).
-    // A session_end marker (v0.128.0+) overrides both heuristics: the session
-    // is definitively closed even if the file is still fresh.
-    let turn_ongoing = turns
-        .last()
-        .map(|t| t.status == super::turn::TurnStatus::Ongoing)
-        .unwrap_or(false);
-    let file_fresh = fs::metadata(path)
-        .and_then(|m| m.modified())
-        .map(|mt| {
-            SystemTime::now()
-                .duration_since(mt)
-                .map(|e| e.as_secs() <= 60)
-                .unwrap_or(true)
-        })
-        .unwrap_or(true);
-    let is_ongoing = !has_session_end && turn_ongoing && file_fresh;
+    Some((metadata.creation_time(), 0))
+}
 
-    // If the file is stale (or session_end present) and the last turn never got
-    // a completion event, mark it as Aborted so the UI doesn't show an ongoing
-    // indicator.
-    if turn_ongoing && (!file_fresh || has_session_end) {
-        if let Some(last) = turns.last_mut() {
-            last.status = TurnStatus::Aborted;
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// A cached parser state for one session file.
+///
+/// The raw JSONL is only retained while a file is initially parsed. Subsequent watcher updates
+/// seek to the previous byte offset and feed only newly completed lines into the turn parser.
+pub struct IncrementalSession {
+    requested_path: PathBuf,
+    resolved_path: PathBuf,
+    parser: IncrementalTurnParser,
+    session: CodexSession,
+    byte_offset: u64,
+    entry_count: usize,
+    pending_line: String,
+    has_session_end: bool,
+    source_size_bytes: u64,
+    modified: Option<SystemTime>,
+    file_identity: Option<(u64, u64)>,
+}
+
+impl IncrementalSession {
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let resolved_path = resolve_rollout_path(path)
+            .ok_or_else(|| format!("session file does not exist: {}", path.display()))?;
+        let content = read_session_file(&resolved_path)?;
+        let entries = parse_entries(&content);
+        let parser = IncrementalTurnParser::from_entries(&entries);
+        let canonical_path =
+            fs::canonicalize(&resolved_path).unwrap_or_else(|_| resolved_path.clone());
+        let mut visited = HashSet::new();
+        if !visited.insert(canonical_path.clone()) {
+            return Err(format!(
+                "recursive session reference detected: {}",
+                path.display()
+            ));
         }
+        let mut session = populate_session(
+            &resolved_path,
+            &entries,
+            parser.snapshot(),
+            build_session_metadata(&resolved_path, &entries),
+            &mut visited,
+        );
+        // Keep the caller's path stable when a plain rollout has been replaced by its `.zst`
+        // sibling. This lets the frontend match live events to the selected session.
+        session.path = path.to_string_lossy().to_string();
+        visited.remove(&canonical_path);
+
+        let source_size_bytes = content.len() as u64;
+        let metadata = fs::metadata(&resolved_path).ok();
+        let byte_offset = if resolved_path.extension().and_then(|ext| ext.to_str()) == Some("zst") {
+            metadata
+                .as_ref()
+                .map(|metadata| metadata.len())
+                .unwrap_or(source_size_bytes)
+        } else {
+            source_size_bytes
+        };
+        let modified = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok());
+        Ok(Self {
+            requested_path: path.to_path_buf(),
+            resolved_path,
+            parser,
+            session,
+            byte_offset,
+            entry_count: entries.len(),
+            pending_line: String::new(),
+            has_session_end: entries
+                .iter()
+                .any(|entry| entry.entry_type == "session_end"),
+            source_size_bytes,
+            modified,
+            file_identity: metadata.as_ref().and_then(file_identity),
+        })
     }
 
-    // Codex v0.137.0 (PR #26114): hide_spawn_agent_metadata defaults to true.
-    // When active, spawn_agent function_call_output is empty and collab_agent_spawn_end
-    // events are suppressed, so no spawn metadata is recorded. Detect this by checking
-    // for spawn_agent calls whose output was empty (status "unknown").
-    let has_missing_spawn_metadata = turns.iter().any(|t| {
-        t.tool_calls
+    pub fn session(&self) -> &CodexSession {
+        &self.session
+    }
+
+    pub fn source_size_bytes(&self) -> u64 {
+        self.source_size_bytes
+    }
+
+    pub fn refresh(&mut self) -> Result<SessionRefresh, String> {
+        let Some(resolved_path) = resolve_rollout_path(&self.requested_path) else {
+            return Err(format!(
+                "session file does not exist: {}",
+                self.requested_path.display()
+            ));
+        };
+        let metadata = fs::metadata(&resolved_path).map_err(|e| e.to_string())?;
+        let modified = metadata.modified().ok();
+        let identity = file_identity(&metadata);
+        let identity_changed = self
+            .file_identity
+            .zip(identity)
+            .map(|(previous, current)| previous != current)
+            .unwrap_or(false);
+        let is_zstd = resolved_path.extension().and_then(|ext| ext.to_str()) == Some("zst");
+
+        // Compression replaces the plain file with a new .zst sibling. A zstd stream cannot be
+        // safely resumed by byte offset, so invalidate and rebuild the cached parser state.
+        if resolved_path != self.resolved_path
+            || identity_changed
+            || metadata.len() < self.byte_offset
+            || (is_zstd && (metadata.len() != self.byte_offset || modified != self.modified))
+        {
+            let replacement = Self::load(&self.requested_path)?;
+            let session = replacement.session.clone();
+            let source_size_bytes = replacement.source_size_bytes;
+            *self = replacement;
+            return Ok(SessionRefresh::Full {
+                session: Box::new(session),
+                source_size_bytes,
+            });
+        }
+
+        if metadata.len() == self.byte_offset && modified == self.modified {
+            return Ok(SessionRefresh::Unchanged);
+        }
+        if metadata.len() == self.byte_offset {
+            let replacement = Self::load(&self.requested_path)?;
+            let session = replacement.session.clone();
+            let source_size_bytes = replacement.source_size_bytes;
+            *self = replacement;
+            return Ok(SessionRefresh::Full {
+                session: Box::new(session),
+                source_size_bytes,
+            });
+        }
+
+        let old_session = self.session.clone();
+        let mut file = fs::File::open(&resolved_path).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(self.byte_offset))
+            .map_err(|e| e.to_string())?;
+        let mut reader = BufReader::new(file);
+        let mut appended = String::new();
+        reader
+            .read_to_string(&mut appended)
+            .map_err(|e| e.to_string())?;
+        self.byte_offset = metadata.len();
+        self.source_size_bytes = metadata.len();
+        self.modified = modified;
+        self.file_identity = identity;
+
+        let combined = if self.pending_line.is_empty() {
+            appended
+        } else {
+            let mut value = std::mem::take(&mut self.pending_line);
+            value.push_str(&appended);
+            value
+        };
+        let has_trailing_newline = combined.ends_with('\n');
+        let mut lines: Vec<&str> = combined.split('\n').collect();
+        let final_line = if has_trailing_newline {
+            lines.pop();
+            None
+        } else {
+            lines.pop()
+        };
+
+        for line in lines {
+            if let Some(entry) = RawEntry::parse(line) {
+                self.has_session_end |= entry.entry_type == "session_end";
+                self.parser.push(&entry, self.entry_count);
+                self.entry_count += 1;
+            }
+        }
+        if let Some(line) = final_line {
+            if let Some(entry) = RawEntry::parse(line) {
+                self.has_session_end |= entry.entry_type == "session_end";
+                self.parser.push(&entry, self.entry_count);
+                self.entry_count += 1;
+            } else {
+                self.pending_line = line.to_string();
+            }
+        }
+
+        let mut turns = self.parser.snapshot();
+        let spawned_worker_ids: Vec<String> = turns
             .iter()
-            .any(|tc| tc.kind == ToolKind::SpawnAgent && tc.status == "unknown")
+            .flat_map(|turn| {
+                turn.collab_spawns
+                    .iter()
+                    .map(|spawn| spawn.new_session_id.clone())
+            })
+            .collect();
+
+        // Newly discovered worker sessions need the recursive embedding pass. Rebuilding is
+        // rare and keeps subagent data consistent without reparsing workers on every append.
+        if spawned_worker_ids != old_session.spawned_worker_ids {
+            let replacement = Self::load(&self.requested_path)?;
+            let session = replacement.session.clone();
+            let source_size_bytes = replacement.source_size_bytes;
+            *self = replacement;
+            return Ok(SessionRefresh::Full {
+                session: Box::new(session),
+                source_size_bytes,
+            });
+        }
+
+        carry_worker_sessions(&old_session.turns, &mut turns);
+        let file_fresh = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .map(|age| age.as_secs() <= 60)
+            .unwrap_or(true);
+        let turn_ongoing = turns
+            .last()
+            .map(|turn| turn.status == TurnStatus::Ongoing)
+            .unwrap_or(false);
+        if turn_ongoing && (!file_fresh || self.has_session_end) {
+            if let Some(last) = turns.last_mut() {
+                last.status = TurnStatus::Aborted;
+            }
+        }
+
+        let has_missing_spawn_metadata = turns.iter().any(|turn| {
+            turn.tool_calls
+                .iter()
+                .any(|tool| tool.kind == ToolKind::SpawnAgent && tool.status == "unknown")
+        });
+        let is_ongoing = !self.has_session_end && turn_ongoing && file_fresh;
+        let thread_name = turns.iter().rev().find_map(|turn| turn.thread_name.clone());
+        let total_tokens = turns
+            .iter()
+            .rev()
+            .find_map(|turn| turn.total_tokens.clone());
+        let changed_turns = changed_turns(&old_session.turns, &turns);
+
+        self.session.turns = turns;
+        self.session.thread_name = thread_name.clone();
+        self.session.total_tokens = total_tokens.clone();
+        self.session.is_ongoing = is_ongoing;
+        self.session.has_missing_spawn_metadata = has_missing_spawn_metadata;
+        self.session.spawned_worker_ids = spawned_worker_ids.clone();
+
+        if changed_turns.is_empty()
+            && old_session.is_ongoing == is_ongoing
+            && serde_json::to_vec(&old_session.total_tokens).ok()
+                == serde_json::to_vec(&total_tokens).ok()
+            && old_session.thread_name == thread_name
+            && old_session.has_missing_spawn_metadata == has_missing_spawn_metadata
+        {
+            return Ok(SessionRefresh::Unchanged);
+        }
+
+        Ok(SessionRefresh::Patch(SessionPatch {
+            path: self.session.path.clone(),
+            updated_turns: changed_turns,
+            total_turns: self.session.turns.len(),
+            is_ongoing,
+            total_tokens,
+            thread_name,
+            spawned_worker_ids,
+            has_missing_spawn_metadata,
+            source_size_bytes: self.source_size_bytes,
+        }))
+    }
+}
+
+/// Return either the complete session or a turn-aligned page for a large session.
+pub fn page_session(
+    session: &CodexSession,
+    direction: SessionPageDirection,
+    cursor: Option<usize>,
+    max_bytes: Option<usize>,
+    source_size_bytes: u64,
+) -> Result<CodexSession, String> {
+    if source_size_bytes <= FULL_SESSION_THRESHOLD_BYTES && cursor.is_none() {
+        return Ok(session.clone());
+    }
+
+    let max_bytes = max_bytes
+        .unwrap_or(DEFAULT_SESSION_PAGE_BYTES)
+        .clamp(64 * 1024, MAX_SESSION_PAGE_BYTES);
+    let total_turns = session.turns.len();
+    let mut selected = Vec::new();
+    let mut selected_bytes = 0usize;
+    let (next_cursor, has_more) = match direction {
+        SessionPageDirection::Forward => {
+            let start = cursor.unwrap_or(0).min(total_turns);
+            let mut end = start;
+            for turn in session.turns.iter().skip(start) {
+                let turn_bytes = serde_json::to_vec(turn)
+                    .map_err(|error| format!("serialize turn: {error}"))?
+                    .len();
+                if !selected.is_empty() && selected_bytes + turn_bytes > max_bytes {
+                    break;
+                }
+                selected.push(turn.clone());
+                selected_bytes += turn_bytes;
+                end += 1;
+                if selected_bytes >= max_bytes {
+                    break;
+                }
+            }
+            (
+                if end < total_turns { Some(end) } else { None },
+                end < total_turns,
+            )
+        }
+        SessionPageDirection::Backward => {
+            let end = cursor.unwrap_or(total_turns).min(total_turns);
+            let mut start = end;
+            for turn in session.turns[..end].iter().rev() {
+                let turn_bytes = serde_json::to_vec(turn)
+                    .map_err(|error| format!("serialize turn: {error}"))?
+                    .len();
+                if !selected.is_empty() && selected_bytes + turn_bytes > max_bytes {
+                    break;
+                }
+                selected.push(turn.clone());
+                selected_bytes += turn_bytes;
+                start -= 1;
+                if selected_bytes >= max_bytes {
+                    break;
+                }
+            }
+            selected.reverse();
+            (if start > 0 { Some(start) } else { None }, start > 0)
+        }
+    };
+
+    let mut page = session.clone();
+    page.turns = selected;
+    page.pagination = Some(SessionPagination {
+        direction,
+        next_cursor,
+        has_more,
+        total_turns,
+        source_size_bytes,
+        page_bytes: max_bytes,
     });
+    Ok(page)
+}
 
-    embed_worker_sessions(path, &mut turns, visited);
+fn parse_entries(content: &str) -> Vec<RawEntry> {
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(RawEntry::parse)
+        .collect()
+}
 
-    session.turns = turns;
-    session.thread_name = thread_name;
-    session.spawned_worker_ids = spawned_worker_ids;
-    session.total_tokens = total_tokens;
-    session.is_ongoing = is_ongoing;
-    session.has_missing_spawn_metadata = has_missing_spawn_metadata;
+fn carry_worker_sessions(previous: &[CodexTurn], current: &mut [CodexTurn]) {
+    for turn in current {
+        let Some(previous_turn) = previous.iter().find(|item| item.turn_id == turn.turn_id) else {
+            continue;
+        };
+        for tool in &mut turn.tool_calls {
+            if let Some(previous_tool) = previous_turn
+                .tool_calls
+                .iter()
+                .find(|item| item.call_id == tool.call_id)
+            {
+                tool.worker_session = previous_tool.worker_session.clone();
+            }
+        }
+    }
+}
 
-    visited.remove(&canonical_path);
-    Ok(session)
+fn changed_turns(previous: &[CodexTurn], current: &[CodexTurn]) -> Vec<CodexTurn> {
+    current
+        .iter()
+        .filter(|turn| {
+            previous
+                .iter()
+                .find(|old| old.turn_id == turn.turn_id)
+                .map(|old| serde_json::to_vec(old).ok() != serde_json::to_vec(turn).ok())
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
 }
 
 fn embed_worker_sessions(
@@ -230,7 +674,9 @@ fn find_session_file_by_id(anchor_path: &Path, session_id: &str) -> Option<PathB
         .ok()?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| {
-            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
                 && path
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -365,6 +811,7 @@ pub fn resolve_sessions_dir(configured: Option<&str>) -> Result<std::path::PathB
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -1945,5 +2392,181 @@ mod tests {
             "a warning must not itself mark the turn as errored"
         );
         assert!(!session.is_ongoing);
+    }
+
+    #[test]
+    fn incremental_session_reports_only_appended_turns() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("rollout-incremental.jsonl");
+        std::fs::write(
+            &path,
+            [
+                r#"{"timestamp":"2026-08-18T10:00:00Z","type":"session_meta","payload":{"id":"incremental-session","timestamp":"2026-08-18T10:00:00Z"}}"#,
+                r#"{"timestamp":"2026-08-18T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+                r#"{"timestamp":"2026-08-18T10:00:02Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1787047202.0}}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+
+        let mut cached = IncrementalSession::load(&path).unwrap();
+        assert_eq!(cached.session().turns.len(), 1);
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(
+            b"{\"timestamp\":\"2026-08-18T10:01:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-2\"}}\n",
+        )
+        .unwrap();
+        file.write_all(
+            b"{\"timestamp\":\"2026-08-18T10:01:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-2\",\"completed_at\":1787047261.0}}",
+        )
+        .unwrap();
+
+        let refresh = cached.refresh().unwrap();
+        match refresh {
+            SessionRefresh::Patch(patch) => {
+                assert_eq!(patch.total_turns, 2);
+                assert_eq!(patch.updated_turns.len(), 1);
+                assert_eq!(patch.updated_turns[0].turn_id, "turn-2");
+            }
+            other => panic!("expected incremental patch, got {}", refresh_kind(&other)),
+        }
+        assert_eq!(cached.session().turns.len(), 2);
+    }
+
+    #[test]
+    fn incremental_session_reparses_replaced_file_even_when_new_file_is_larger() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("rollout-replaced.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"timestamp":"2026-08-18T12:00:00Z","type":"session_meta","payload":{"id":"replacement-session","timestamp":"2026-08-18T12:00:00Z"}}
+{"timestamp":"2026-08-18T12:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-old"}}
+{"timestamp":"2026-08-18T12:00:02Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-old","completed_at":1787054402.0}}"#,
+        )
+        .unwrap();
+        let mut cached = IncrementalSession::load(&path).unwrap();
+
+        let replacement = tmp.path().join("replacement.tmp");
+        std::fs::write(
+            &replacement,
+            [
+                r#"{"timestamp":"2026-08-18T12:01:00Z","type":"session_meta","payload":{"id":"replacement-session","timestamp":"2026-08-18T12:01:00Z"}}"#,
+                r#"{"timestamp":"2026-08-18T12:01:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-new"}}"#,
+                r#"{"timestamp":"2026-08-18T12:01:02Z","type":"event_msg","payload":{"type":"agent_message","message":"replacement content"}}"#,
+                r#"{"timestamp":"2026-08-18T12:01:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-new","completed_at":1787054463.0}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+
+        let refresh = cached.refresh().unwrap();
+        match refresh {
+            SessionRefresh::Full { session, .. } => {
+                assert_eq!(session.turns.len(), 1);
+                assert_eq!(session.turns[0].turn_id, "turn-new");
+            }
+            other => panic!("expected full refresh, got {}", refresh_kind(&other)),
+        }
+    }
+
+    #[test]
+    fn unchanged_zstd_session_does_not_trigger_full_reparse() {
+        let tmp = tempdir().unwrap();
+        let requested_path = tmp.path().join("rollout-zstd.jsonl");
+        let compressed_path = tmp.path().join("rollout-zstd.jsonl.zst");
+        let content = [
+            r#"{"timestamp":"2026-08-18T12:02:00Z","type":"session_meta","payload":{"id":"zstd-cache-session","timestamp":"2026-08-18T12:02:00Z"}}"#,
+            r#"{"timestamp":"2026-08-18T12:02:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-08-18T12:02:02Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1787054522.0}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&compressed_path, compress_zstd(content.as_bytes())).unwrap();
+
+        let mut cached = IncrementalSession::load(&requested_path).unwrap();
+        assert_eq!(cached.session().path, requested_path.to_string_lossy());
+        assert!(matches!(
+            cached.refresh().unwrap(),
+            SessionRefresh::Unchanged
+        ));
+    }
+
+    #[test]
+    fn large_session_pages_are_aligned_to_turns_and_support_reverse_loading() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("rollout-paged.jsonl");
+        let large_message = "x".repeat(70_000);
+        let turn_one = format!(
+            r#"{{"timestamp":"2026-08-18T11:00:02Z","type":"event_msg","payload":{{"type":"agent_message","message":"{large_message}","phase":"final_answer"}}}}"#
+        );
+        let turn_two = format!(
+            r#"{{"timestamp":"2026-08-18T11:01:02Z","type":"event_msg","payload":{{"type":"agent_message","message":"{large_message}","phase":"final_answer"}}}}"#
+        );
+        std::fs::write(
+            &path,
+            [
+                r#"{"timestamp":"2026-08-18T11:00:00Z","type":"session_meta","payload":{"id":"paged-session","timestamp":"2026-08-18T11:00:00Z"}}"#,
+                r#"{"timestamp":"2026-08-18T11:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+                turn_one.as_str(),
+                r#"{"timestamp":"2026-08-18T11:00:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1787050803.0}}"#,
+                r#"{"timestamp":"2026-08-18T11:01:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}"#,
+                turn_two.as_str(),
+                r#"{"timestamp":"2026-08-18T11:01:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-2","completed_at":1787050863.0}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let session = parse_session(&path).unwrap();
+        let page = page_session(
+            &session,
+            SessionPageDirection::Backward,
+            None,
+            Some(64 * 1024),
+            FULL_SESSION_THRESHOLD_BYTES + 1,
+        )
+        .unwrap();
+        assert_eq!(page.turns.len(), 1);
+        assert_eq!(page.turns[0].turn_id, "turn-2");
+        assert_eq!(page.pagination.as_ref().unwrap().next_cursor, Some(1));
+        assert!(page.pagination.as_ref().unwrap().has_more);
+
+        let older = page_session(
+            &session,
+            SessionPageDirection::Backward,
+            Some(1),
+            Some(64 * 1024),
+            FULL_SESSION_THRESHOLD_BYTES + 1,
+        )
+        .unwrap();
+        assert_eq!(older.turns.len(), 1);
+        assert_eq!(older.turns[0].turn_id, "turn-1");
+        assert!(!older.pagination.as_ref().unwrap().has_more);
+
+        let newer = page_session(
+            &session,
+            SessionPageDirection::Forward,
+            Some(1),
+            Some(64 * 1024),
+            FULL_SESSION_THRESHOLD_BYTES + 1,
+        )
+        .unwrap();
+        assert_eq!(newer.turns.len(), 1);
+        assert_eq!(newer.turns[0].turn_id, "turn-2");
+        assert!(!newer.pagination.as_ref().unwrap().has_more);
+    }
+
+    fn refresh_kind(refresh: &SessionRefresh) -> &'static str {
+        match refresh {
+            SessionRefresh::Unchanged => "unchanged",
+            SessionRefresh::Full { .. } => "full",
+            SessionRefresh::Patch(_) => "patch",
+        }
     }
 }

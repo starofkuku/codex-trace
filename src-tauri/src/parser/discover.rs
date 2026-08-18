@@ -57,6 +57,8 @@ pub struct CodexSessionInfo {
     /// marks a whole rollout file as a continuation of another paginated thread's history.
     /// Null for legacy-history sessions or paginated threads with no inherited prefix.
     pub history_base_thread_id: Option<String>,
+    /// Size of the rollout file on disk, in bytes.
+    pub file_size_bytes: u64,
 }
 
 /// Scan a sessions directory recursively for all rollout-*.jsonl files.
@@ -187,6 +189,7 @@ fn date_group_from_path(path: &Path) -> String {
 /// memory stays bounded to a single line — session files can be hundreds of
 /// megabytes, and slurping every file into memory during discovery spiked RSS.
 fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
+    let file_size_bytes = fs::metadata(path).ok()?.len();
     let reader = open_session_reader(path).ok()?;
     let mut lines = reader
         .lines()
@@ -553,6 +556,7 @@ fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
         ai_title,
         approval_mode,
         history_base_thread_id,
+        file_size_bytes,
     })
 }
 
@@ -629,6 +633,10 @@ mod tests {
         let sessions = discover_sessions(tmp.path()).unwrap();
         let session = sessions.iter().find(|s| s.id == "new-sess-id").unwrap();
         assert_eq!(session.id, "new-sess-id");
+        assert_eq!(
+            session.file_size_bytes,
+            std::fs::metadata(&path).unwrap().len()
+        );
     }
 
     #[test]

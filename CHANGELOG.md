@@ -4,6 +4,18 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.6] — 2026-08-18
+
+### Added
+
+- **Large-session browsing**. Add paginated loading, incremental live updates, gzip responses,
+  and parsed-session caching for large JSONL histories.
+- **Rich Code Mode tool traces**. Expand current Codex `exec` calls into their nested commands,
+  patches, and MCP operations instead of showing only the outer tool name.
+- **Session file sizes**. Show each rollout file's on-disk size in the session sidebar.
+
+[0.4.6]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.6
+
 ## [0.4.5] — 2026-08-18
 
 ### Fixed

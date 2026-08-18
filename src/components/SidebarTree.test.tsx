@@ -24,6 +24,7 @@ function makeSession(overrides: Partial<CodexSessionInfo> = {}): CodexSessionInf
     is_archived: false,
     approval_mode: null,
     history_base_thread_id: null,
+    file_size_bytes: 1_572_864,
     worker_nickname: null,
     worker_role: null,
     spawned_worker_ids: [],
@@ -71,6 +72,19 @@ describe("SidebarTree", () => {
       />,
     );
     expect(screen.getByText("myproject")).toBeInTheDocument();
+  });
+
+  it("renders the session file size", () => {
+    render(
+      <SidebarTree
+        sessions={[makeSession()]}
+        selectedPath={null}
+        collapsedDates={new Set()}
+        onSelectSession={vi.fn()}
+        onToggleDate={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("1.5 MB")).toBeInTheDocument();
   });
 
   it("prefers thread_name over cwd", () => {

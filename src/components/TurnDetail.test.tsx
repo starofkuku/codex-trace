@@ -88,7 +88,13 @@ describe("TurnDetail", () => {
 
     expect(screen.getByText("ctx 84% left")).toBeInTheDocument();
     expect(document.querySelector(".info-bar__context-fill")).toHaveStyle({ width: "16%" });
-    expect(screen.getByText("40.0k tok · 1m")).toBeInTheDocument();
+    expect(screen.getByText("1m")).toBeInTheDocument();
+    expect(screen.getByText("Token usage")).toBeInTheDocument();
+    expect(screen.getByText("total 40.0k")).toBeInTheDocument();
+    expect(screen.getByText("input 38.0k")).toBeInTheDocument();
+    expect(screen.getByText("cached 12.0k")).toBeInTheDocument();
+    expect(screen.getByText("output 2.0k")).toBeInTheDocument();
+    expect(screen.getByText("reasoning 500")).toBeInTheDocument();
   });
 
   it("omits context-left metadata when last-token usage is unavailable", () => {
@@ -102,7 +108,8 @@ describe("TurnDetail", () => {
     );
 
     expect(screen.queryByText(/ctx .* left/)).not.toBeInTheDocument();
-    expect(screen.getByText("40.0k tok · 1m")).toBeInTheDocument();
+    expect(screen.getByText("1m")).toBeInTheDocument();
+    expect(screen.getByText("total 40.0k")).toBeInTheDocument();
   });
 
   it("renders assistant commentary as an inline Complementary item without duplication", () => {

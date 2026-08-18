@@ -10,6 +10,18 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Formats a file size using binary units: 1024 -> "1.0 KB". */
+export function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+
+  const units = ["KB", "MB", "GB", "TB"];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length);
+  const value = bytes / 1024 ** exponent;
+  const precision = value >= 100 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[exponent - 1]}`;
+}
+
 const CODEX_CONTEXT_BASELINE_TOKENS = 12_000;
 
 /** Matches Codex TUI's "Context XX% left" calculation. */

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::parser::session::parse_session;
+use crate::parser::session::SessionPageDirection;
 use crate::state::AppState;
 use crate::watcher::start_session_watcher;
 
@@ -17,8 +18,24 @@ pub fn load_session_from_path(path: &str) -> Result<crate::parser::session::Code
 }
 
 #[tauri::command]
-pub async fn load_session(path: String) -> Result<crate::parser::session::CodexSession, String> {
-    load_session_from_path(&path)
+pub async fn load_session(
+    path: String,
+    direction: Option<SessionPageDirection>,
+    cursor: Option<usize>,
+    max_bytes: Option<usize>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::parser::session::CodexSession, String> {
+    let app_state = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        app_state.load_session_page(
+            &path,
+            direction.unwrap_or(SessionPageDirection::Backward),
+            cursor,
+            max_bytes,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -27,7 +44,13 @@ pub async fn watch_session(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let session = load_session_from_path(&path)?;
+    let app_state = state.inner().clone();
+    let session = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || app_state.load_session_snapshot(&path)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     state.stop_session_watcher()?;
     state.set_watched_ongoing(path.clone(), session.is_ongoing);
     let handle = start_session_watcher(path, state.inner().clone(), Some(app));

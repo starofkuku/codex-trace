@@ -8,6 +8,9 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
+    /// Codex code mode's outer `exec` call. The actual operations are stored in
+    /// `nested_tool_calls` after parsing the JavaScript input.
+    CodeMode,
     ExecCommand,
     McpTool,
     PatchApply,
@@ -33,6 +36,18 @@ pub enum ToolKind {
     Unknown,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NestedToolCall {
+    pub name: String,
+    pub kind: ToolKind,
+    pub arguments: Value,
+    pub input_text: Option<String>,
+    pub command: Option<Vec<String>>,
+    pub cwd: Option<String>,
+    pub mcp_server: Option<String>,
+    pub mcp_tool: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub call_id: String,
@@ -40,6 +55,8 @@ pub struct ToolCall {
     pub name: String,
     pub arguments: Value,
     pub input_text: Option<String>,
+    #[serde(default)]
+    pub nested_tool_calls: Vec<NestedToolCall>,
     pub output: Option<String>,
     pub exit_code: Option<i32>,
     pub command: Option<Vec<String>>,
@@ -95,6 +112,7 @@ pub struct PendingCall {
 
 /// Builder that collects function_call / custom_tool_call entries and finalizes
 /// them when the corresponding end event arrives.
+#[derive(Debug, Clone)]
 pub struct ToolCallBuilder {
     pub pending: HashMap<String, PendingCall>,
     pub finalized: Vec<ToolCall>,
@@ -105,6 +123,12 @@ pub struct ToolCallBuilder {
     /// Populated from the `dynamic_tools` field in `task_started` events.
     /// Used to classify MCP/connector tools that arrive without a namespace field.
     dynamic_tool_registry: HashMap<String, (String, String)>,
+}
+
+impl Default for ToolCallBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToolCallBuilder {
@@ -179,7 +203,7 @@ impl ToolCallBuilder {
         );
     }
 
-    /// Finalize a custom_tool_call (apply_patch etc) with its output.
+    /// Finalize a custom_tool_call (apply_patch, code-mode exec, etc.) with its output.
     pub fn finalize_custom_tool_output(
         &mut self,
         call_id: &str,
@@ -194,12 +218,36 @@ impl ToolCallBuilder {
                 .zip(completed_at_ms)
                 .and_then(|(started, completed)| completed.checked_sub(started))
                 .map(|duration_ms| duration_ms as f64 / 1000.0);
+            let nested_tool_calls = if pending.name == "exec" {
+                parse_code_mode_tool_calls(pending.input_text.as_deref().unwrap_or(""))
+            } else {
+                Vec::new()
+            };
+            let kind = if pending.name == "exec" {
+                ToolKind::CodeMode
+            } else if pending.name == "apply_patch" {
+                ToolKind::PatchApply
+            } else {
+                ToolKind::Unknown
+            };
+            let status = if kind == ToolKind::CodeMode {
+                if exit_code.is_some_and(|code| code != 0) {
+                    "failed"
+                } else {
+                    "completed"
+                }
+            } else if exit_code.unwrap_or(1) == 0 {
+                "completed"
+            } else {
+                "failed"
+            };
             self.finalized.push(ToolCall {
                 call_id: call_id.to_string(),
-                kind: ToolKind::PatchApply,
+                kind: kind.clone(),
                 name: pending.name,
                 arguments: pending.arguments,
                 input_text: pending.input_text,
+                nested_tool_calls,
                 output: Some(output.to_string()),
                 exit_code,
                 command: None,
@@ -209,18 +257,18 @@ impl ToolCallBuilder {
                 mcp_tool: None,
                 plugin_id: None,
                 script_path: None,
-                patch_success: exit_code.map(|c| c == 0),
+                patch_success: if kind == ToolKind::PatchApply {
+                    exit_code.map(|code| code == 0)
+                } else {
+                    None
+                },
                 patch_changes: None,
                 web_query: None,
                 web_url: None,
                 image_prompt: None,
                 image_file_path: None,
                 worker_session: None,
-                status: if exit_code.unwrap_or(1) == 0 {
-                    "completed".to_string()
-                } else {
-                    "failed".to_string()
-                },
+                status: status.to_string(),
                 subagent_id: None,
                 subagent_name: None,
                 output_truncated: None,
@@ -315,6 +363,7 @@ impl ToolCallBuilder {
                     name: pending.name,
                     arguments: pending.arguments,
                     input_text: pending.input_text,
+                    nested_tool_calls: Vec::new(),
                     output: if output.is_empty() {
                         None
                     } else {
@@ -350,6 +399,7 @@ impl ToolCallBuilder {
                     name: pending.name,
                     arguments: pending.arguments,
                     input_text: pending.input_text,
+                    nested_tool_calls: Vec::new(),
                     output: Some(output.to_string()),
                     exit_code: None,
                     command: None,
@@ -387,6 +437,7 @@ impl ToolCallBuilder {
                     name: pending.name,
                     arguments: pending.arguments,
                     input_text: pending.input_text,
+                    nested_tool_calls: Vec::new(),
                     output: if output.is_empty() {
                         None
                     } else {
@@ -429,6 +480,7 @@ impl ToolCallBuilder {
                     name: pending.name,
                     arguments: pending.arguments,
                     input_text: pending.input_text,
+                    nested_tool_calls: Vec::new(),
                     output: if output.is_empty() {
                         None
                     } else {
@@ -467,6 +519,7 @@ impl ToolCallBuilder {
                     name: pending.name,
                     arguments: pending.arguments,
                     input_text: pending.input_text,
+                    nested_tool_calls: Vec::new(),
                     output: Some(output.to_string()),
                     exit_code: None,
                     command: None,
@@ -546,6 +599,7 @@ impl ToolCallBuilder {
                 name: pending.name,
                 arguments: pending.arguments,
                 input_text: pending.input_text,
+                nested_tool_calls: Vec::new(),
                 output: Some(output.to_string()),
                 exit_code: None,
                 command: None,
@@ -701,6 +755,7 @@ impl ToolCallBuilder {
             name: pending.name,
             arguments: pending.arguments,
             input_text: pending.input_text,
+            nested_tool_calls: Vec::new(),
             output,
             exit_code,
             command,
@@ -776,6 +831,7 @@ impl ToolCallBuilder {
             name: pending.name,
             arguments: pending.arguments,
             input_text: pending.input_text,
+            nested_tool_calls: Vec::new(),
             output,
             exit_code: None,
             command: None,
@@ -866,6 +922,7 @@ impl ToolCallBuilder {
             name: pending.name,
             arguments: pending.arguments,
             input_text: pending.input_text,
+            nested_tool_calls: Vec::new(),
             output: stdout,
             exit_code: None,
             command: None,
@@ -902,6 +959,7 @@ impl ToolCallBuilder {
             name: pending_name.unwrap_or_else(|| kind_name(event_type)),
             arguments: payload.clone(),
             input_text: None,
+            nested_tool_calls: Vec::new(),
             output: None,
             exit_code: None,
             command: None,
@@ -938,6 +996,7 @@ impl ToolCallBuilder {
             name: pending_name.unwrap_or_else(|| kind_name(event_type)),
             arguments: payload.clone(),
             input_text: None,
+            nested_tool_calls: Vec::new(),
             output: None,
             exit_code: None,
             command: None,
@@ -974,6 +1033,7 @@ impl ToolCallBuilder {
             name: pending_name.unwrap_or_else(|| kind_name(event_type)),
             arguments: payload.clone(),
             input_text: None,
+            nested_tool_calls: Vec::new(),
             output: None,
             exit_code: None,
             command: None,
@@ -1019,6 +1079,7 @@ impl ToolCallBuilder {
             name: pending_name.unwrap_or_else(|| kind_name(event_type)),
             arguments: payload.clone(),
             input_text: None,
+            nested_tool_calls: Vec::new(),
             output: None,
             exit_code: None,
             command: None,
@@ -1074,6 +1135,7 @@ impl ToolCallBuilder {
             name: hook_type,
             arguments: Value::Object(serde_json::Map::new()),
             input_text: None,
+            nested_tool_calls: Vec::new(),
             output: stdout,
             exit_code,
             command: None,
@@ -1132,6 +1194,7 @@ impl ToolCallBuilder {
             name: pending.name,
             arguments: pending.arguments,
             input_text: pending.input_text,
+            nested_tool_calls: Vec::new(),
             output,
             exit_code: None,
             command: None,
@@ -1159,12 +1222,23 @@ impl ToolCallBuilder {
     pub fn drain_pending(&mut self) {
         let pending: Vec<(String, PendingCall)> = self.pending.drain().collect();
         for (call_id, p) in pending {
+            let is_code_mode = p.name == "exec";
+            let nested_tool_calls = if is_code_mode {
+                parse_code_mode_tool_calls(p.input_text.as_deref().unwrap_or(""))
+            } else {
+                Vec::new()
+            };
             self.finalized.push(ToolCall {
                 call_id,
-                kind: ToolKind::Unknown,
+                kind: if is_code_mode {
+                    ToolKind::CodeMode
+                } else {
+                    ToolKind::Unknown
+                },
                 name: p.name,
                 arguments: p.arguments,
                 input_text: p.input_text,
+                nested_tool_calls,
                 output: None,
                 exit_code: None,
                 command: None,
@@ -1181,7 +1255,11 @@ impl ToolCallBuilder {
                 image_prompt: None,
                 image_file_path: None,
                 worker_session: None,
-                status: "unknown".to_string(),
+                status: if is_code_mode {
+                    "running".to_string()
+                } else {
+                    "unknown".to_string()
+                },
                 subagent_id: None,
                 subagent_name: None,
                 output_truncated: None,
@@ -1224,6 +1302,7 @@ fn exec_tool_call_from_pending(
         name: pending.name,
         arguments: pending.arguments,
         input_text: pending.input_text,
+        nested_tool_calls: Vec::new(),
         output: parsed_output.output,
         exit_code: parsed_output.exit_code,
         command,
@@ -1248,6 +1327,463 @@ fn exec_tool_call_from_pending(
         subagent_name: None,
         output_truncated: None,
     }
+}
+
+/// Parse the JavaScript source carried by Codex code mode's outer `exec` call.
+///
+/// Code mode deliberately persists one `custom_tool_call` named `exec`, while the
+/// actual operations are expressions such as `tools.exec_command({...})` inside
+/// its input. This small parser only extracts call boundaries and the structured
+/// fields needed by the trace UI; it does not execute or evaluate the JavaScript.
+fn parse_code_mode_tool_calls(source: &str) -> Vec<NestedToolCall> {
+    let mut calls = Vec::new();
+    let mut search_from = 0;
+
+    while let Some((name, open, close)) = next_code_mode_call(source, search_from) {
+        let argument_source = &source[open + 1..close];
+        let arguments = parse_code_mode_arguments(&name, argument_source);
+        let input_text = if name == "apply_patch" {
+            first_js_string(argument_source)
+        } else {
+            None
+        };
+        let (mcp_server, mcp_tool) = code_mode_mcp_parts(&name);
+        let command = if matches!(
+            name.as_str(),
+            "exec_command" | "shell_command" | "write_stdin"
+        ) {
+            command_from_arguments(&arguments)
+        } else {
+            None
+        };
+        let cwd = cwd_from_arguments(&arguments);
+
+        calls.push(NestedToolCall {
+            name: name.clone(),
+            kind: code_mode_tool_kind(&name),
+            arguments,
+            input_text,
+            command,
+            cwd,
+            mcp_server,
+            mcp_tool,
+        });
+        search_from = close + 1;
+    }
+
+    calls
+}
+
+fn next_code_mode_call(source: &str, search_from: usize) -> Option<(String, usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut index = search_from;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if line_comment {
+            if byte == b'\n' {
+                line_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if block_comment {
+            if byte == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                block_comment = false;
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+
+        if matches!(byte, b'"' | b'\'' | b'`') {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            line_comment = true;
+            index += 2;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            block_comment = true;
+            index += 2;
+            continue;
+        }
+
+        if bytes[index..].starts_with(b"tools.")
+            && (index == 0 || !is_js_identifier_byte(bytes[index - 1]))
+        {
+            let name_start = index + "tools.".len();
+            let mut name_end = name_start;
+            while name_end < bytes.len() && is_js_identifier_byte(bytes[name_end]) {
+                name_end += 1;
+            }
+            if name_end > name_start {
+                let mut open = name_end;
+                while open < bytes.len() && bytes[open].is_ascii_whitespace() {
+                    open += 1;
+                }
+                if open < bytes.len() && bytes[open] == b'(' {
+                    let close = find_matching_delimiter(source, open, b'(', b')')?;
+                    return Some((source[name_start..name_end].to_string(), open, close));
+                }
+            }
+        }
+
+        index += 1;
+    }
+
+    None
+}
+
+fn is_js_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
+}
+
+fn find_matching_delimiter(source: &str, open: usize, opening: u8, closing: u8) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+
+    for index in open..bytes.len() {
+        let byte = bytes[index];
+        if line_comment {
+            if byte == b'\n' {
+                line_comment = false;
+            }
+            continue;
+        }
+        if block_comment {
+            if byte == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                block_comment = false;
+            }
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        if matches!(byte, b'"' | b'\'' | b'`') {
+            quote = Some(byte);
+        } else if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            line_comment = true;
+        } else if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            block_comment = true;
+        } else if byte == opening {
+            depth += 1;
+        } else if byte == closing {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_code_mode_arguments(tool_name: &str, source: &str) -> Value {
+    if tool_name == "apply_patch" {
+        return Value::Object(serde_json::Map::new());
+    }
+
+    let source = source.trim();
+    if source.starts_with('{') {
+        if let Some(end) = find_matching_delimiter(source, 0, b'{', b'}') {
+            if let Ok(value) = serde_json::from_str::<Value>(&source[..=end]) {
+                return value;
+            }
+            return parse_js_object(&source[..=end]);
+        }
+    }
+
+    parse_js_scalar(source).unwrap_or(Value::Null)
+}
+
+fn parse_js_object(source: &str) -> Value {
+    let mut object = serde_json::Map::new();
+    let bytes = source.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return Value::Object(object);
+    }
+
+    let mut index = 1usize;
+    while index < bytes.len() {
+        index = skip_js_whitespace_and_commas(source, index);
+        if index >= bytes.len() || bytes[index] == b'}' {
+            break;
+        }
+
+        let (key, after_key) = match parse_js_key(source, index) {
+            Some(value) => value,
+            None => break,
+        };
+        index = skip_js_whitespace(source, after_key);
+        if bytes.get(index) != Some(&b':') {
+            break;
+        }
+        index = skip_js_whitespace(source, index + 1);
+
+        let (value, after_value) = parse_js_value(source, index);
+        object.insert(key, value);
+        if after_value <= index {
+            break;
+        }
+        index = after_value;
+    }
+
+    Value::Object(object)
+}
+
+fn parse_js_key(source: &str, start: usize) -> Option<(String, usize)> {
+    if source
+        .as_bytes()
+        .get(start)
+        .is_some_and(|byte| matches!(byte, b'"' | b'\'' | b'`'))
+    {
+        return parse_js_string_literal(source, start);
+    }
+
+    let bytes = source.as_bytes();
+    let mut end = start;
+    while end < bytes.len() && is_js_identifier_byte(bytes[end]) {
+        end += 1;
+    }
+    (end > start).then(|| (source[start..end].to_string(), end))
+}
+
+fn parse_js_value(source: &str, start: usize) -> (Value, usize) {
+    let bytes = source.as_bytes();
+    if start >= bytes.len() {
+        return (Value::Null, start);
+    }
+
+    if matches!(bytes[start], b'"' | b'\'' | b'`') {
+        return parse_js_string_literal(source, start)
+            .map(|(value, end)| (Value::String(value), end))
+            .unwrap_or((Value::Null, start));
+    }
+
+    if matches!(bytes[start], b'{' | b'[') {
+        let (opening, closing) = if bytes[start] == b'{' {
+            (b'{', b'}')
+        } else {
+            (b'[', b']')
+        };
+        if let Some(end) = find_matching_delimiter(source, start, opening, closing) {
+            let raw = &source[start..=end];
+            if let Ok(value) = serde_json::from_str(raw) {
+                return (value, end + 1);
+            }
+            return (Value::String(raw.to_string()), end + 1);
+        }
+    }
+
+    let end = scan_js_scalar_end(source, start);
+    let raw = source[start..end].trim();
+    (
+        parse_js_scalar(raw).unwrap_or_else(|| Value::String(raw.to_string())),
+        end,
+    )
+}
+
+fn parse_js_scalar(source: &str) -> Option<Value> {
+    match source {
+        "true" => Some(Value::Bool(true)),
+        "false" => Some(Value::Bool(false)),
+        "null" | "undefined" => Some(Value::Null),
+        _ => source
+            .parse::<i64>()
+            .map(|value| Value::Number(value.into()))
+            .or_else(|_| {
+                source
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+                    .map(Value::Number)
+                    .ok_or(())
+            })
+            .ok(),
+    }
+}
+
+fn scan_js_scalar_end(source: &str, start: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut index = start;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if matches!(byte, b'"' | b'\'' | b'`') {
+            quote = Some(byte);
+        } else if matches!(byte, b'{' | b'[' | b'(') {
+            depth += 1;
+        } else if matches!(byte, b'}' | b']' | b')') {
+            if depth == 0 {
+                break;
+            }
+            depth -= 1;
+        } else if byte == b',' && depth == 0 {
+            break;
+        }
+        index += 1;
+    }
+    index
+}
+
+fn skip_js_whitespace(source: &str, mut index: usize) -> usize {
+    while source
+        .as_bytes()
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        index += 1;
+    }
+    index
+}
+
+fn skip_js_whitespace_and_commas(source: &str, mut index: usize) -> usize {
+    loop {
+        let next = skip_js_whitespace(source, index);
+        if source.as_bytes().get(next) == Some(&b',') {
+            index = next + 1;
+        } else {
+            return next;
+        }
+    }
+}
+
+fn parse_js_string_literal(source: &str, start: usize) -> Option<(String, usize)> {
+    let quote = *source.as_bytes().get(start)?;
+    if !matches!(quote, b'"' | b'\'' | b'`') {
+        return None;
+    }
+
+    let mut value = String::new();
+    let mut index = start + 1;
+    while index < source.len() {
+        let character = source[index..].chars().next()?;
+        let character_len = character.len_utf8();
+        if character as u32 == quote as u32 {
+            return Some((value, index + character_len));
+        }
+        if character != '\\' {
+            value.push(character);
+            index += character_len;
+            continue;
+        }
+
+        index += character_len;
+        let escaped = source[index..].chars().next()?;
+        let escaped_len = escaped.len_utf8();
+        match escaped {
+            'n' => value.push('\n'),
+            'r' => value.push('\r'),
+            't' => value.push('\t'),
+            'b' => value.push('\u{0008}'),
+            'f' => value.push('\u{000c}'),
+            '\\' | '"' | '\'' | '`' => value.push(escaped),
+            '\n' => {}
+            'u' => {
+                let hex_start = index + escaped_len;
+                let hex_end = hex_start + 4;
+                let code = source.get(hex_start..hex_end)?.trim();
+                let code = u32::from_str_radix(code, 16).ok()?;
+                value.push(char::from_u32(code)?);
+                index = hex_end;
+                continue;
+            }
+            'x' => {
+                let hex_start = index + escaped_len;
+                let hex_end = hex_start + 2;
+                let code = source.get(hex_start..hex_end)?.trim();
+                let code = u32::from_str_radix(code, 16).ok()?;
+                value.push(char::from_u32(code)?);
+                index = hex_end;
+                continue;
+            }
+            _ => value.push(escaped),
+        }
+        index += escaped_len;
+    }
+
+    None
+}
+
+fn first_js_string(source: &str) -> Option<String> {
+    let start = source
+        .char_indices()
+        .find_map(|(index, character)| matches!(character, '"' | '\'' | '`').then_some(index))?;
+    parse_js_string_literal(source, start).map(|(value, _)| value)
+}
+
+fn code_mode_tool_kind(name: &str) -> ToolKind {
+    match name {
+        "exec" => ToolKind::CodeMode,
+        "exec_command" | "shell_command" | "write_stdin" => ToolKind::ExecCommand,
+        "apply_patch" => ToolKind::PatchApply,
+        "web_search" => ToolKind::WebSearch,
+        "image_generation" => ToolKind::ImageGeneration,
+        "spawn_agent" => ToolKind::SpawnAgent,
+        "wait" | "wait_agent" => ToolKind::WaitAgent,
+        "close_agent" | "interrupt_agent" => ToolKind::InterruptAgent,
+        "assign_task" | "followup_task" => ToolKind::FollowupTask,
+        "list_available_plugins_to_install" | "request_plugin_install" => ToolKind::AgentPlugin,
+        name if name.starts_with("mcp__") || name.starts_with("mcp:") => ToolKind::McpTool,
+        _ => ToolKind::Unknown,
+    }
+}
+
+fn code_mode_mcp_parts(name: &str) -> (Option<String>, Option<String>) {
+    if name.starts_with("mcp__") {
+        return parse_mcp_name(name);
+    }
+    if let Some((tool_type, server, tool)) = parse_namespaced_tool_name(name) {
+        if tool_type == "mcp" {
+            return (Some(server), Some(tool));
+        }
+    }
+    (None, None)
 }
 
 fn spawn_agent_status(output: &str) -> String {
@@ -1605,8 +2141,89 @@ fn parse_output_truncated(payload: &Value) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_exec_function_output, parse_mcp_namespace, ToolCallBuilder, ToolKind};
+    use super::{
+        parse_code_mode_tool_calls, parse_exec_function_output, parse_mcp_namespace,
+        ToolCallBuilder, ToolKind,
+    };
     use serde_json::json;
+
+    #[test]
+    fn code_mode_extracts_nested_exec_and_patch_calls() {
+        let calls = parse_code_mode_tool_calls(
+            "说明: 当前任务\nawait tools.exec_command({cmd: \"echo hi\", workdir: \"/tmp\"});\nawait tools.apply_patch(`*** Begin Patch\n*** Add File: note.txt\n+hello\n*** End Patch`);",
+        );
+
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "exec_command");
+        assert_eq!(calls[0].kind, ToolKind::ExecCommand);
+        assert_eq!(
+            calls[0].command.as_deref().map(|command| command.to_vec()),
+            Some(vec!["echo hi".to_string()])
+        );
+        assert_eq!(calls[0].cwd.as_deref(), Some("/tmp"));
+        assert_eq!(calls[1].name, "apply_patch");
+        assert_eq!(calls[1].kind, ToolKind::PatchApply);
+        assert!(calls[1]
+            .input_text
+            .as_deref()
+            .is_some_and(|patch| patch.contains("*** Add File: note.txt")));
+    }
+
+    #[test]
+    fn code_mode_ignores_tool_names_inside_strings_and_parses_mcp_calls() {
+        let calls = parse_code_mode_tool_calls(
+            r#"// tools.exec_command({cmd: 'comment'});
+const ignored = "tools.exec_command({cmd: 'fake'})";
+const results = await Promise.all([
+  tools.exec_command({cmd: 'echo one', workdir: '/tmp'}),
+  tools.mcp__github__search({query: 'rust parser'}),
+]);"#,
+        );
+
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0].command.as_deref().map(|command| command.to_vec()),
+            Some(vec!["echo one".to_string()])
+        );
+        assert_eq!(calls[1].kind, ToolKind::McpTool);
+        assert_eq!(calls[1].mcp_server.as_deref(), Some("github"));
+        assert_eq!(calls[1].mcp_tool.as_deref(), Some("search"));
+        assert_eq!(calls[1].arguments["query"], "rust parser");
+    }
+
+    #[test]
+    fn builder_marks_code_mode_and_keeps_nested_calls() {
+        let mut builder = ToolCallBuilder::new();
+        builder.add_custom_tool_call(
+            "call-code".to_string(),
+            "exec".to_string(),
+            Some("tools.exec_command({cmd: 'pwd'})".to_string()),
+            None,
+        );
+        builder.finalize_custom_tool_output("call-code", "done", Some(0), None);
+
+        let tool = &builder.finalized[0];
+        assert_eq!(tool.kind, ToolKind::CodeMode);
+        assert_eq!(tool.nested_tool_calls.len(), 1);
+        assert_eq!(tool.nested_tool_calls[0].name, "exec_command");
+    }
+
+    #[test]
+    fn pending_code_mode_is_renderable_while_running() {
+        let mut builder = ToolCallBuilder::new();
+        builder.add_custom_tool_call(
+            "call-running".to_string(),
+            "exec".to_string(),
+            Some("tools.exec_command({cmd: 'sleep 30'})".to_string()),
+            None,
+        );
+        builder.drain_pending();
+
+        let tool = &builder.finalized[0];
+        assert_eq!(tool.kind, ToolKind::CodeMode);
+        assert_eq!(tool.status, "running");
+        assert_eq!(tool.nested_tool_calls[0].name, "exec_command");
+    }
 
     #[test]
     fn namespace_with_tool_prefix_keeps_full_namespace_as_server() {

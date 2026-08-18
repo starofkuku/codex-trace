@@ -1,8 +1,12 @@
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 use crate::parser::discover::CodexSessionInfo;
+use crate::parser::session::{
+    page_session, CodexSession, IncrementalSession, SessionPageDirection, SessionRefresh,
+};
 use crate::settings::Settings;
 use crate::watcher::WatcherHandle;
 
@@ -20,6 +24,8 @@ struct SessionsCache {
 }
 
 const SESSIONS_CACHE_TTL: Duration = Duration::from_secs(2);
+const MAX_PARSED_SESSION_CACHE_ENTRIES: usize = 8;
+const MAX_PARSED_SESSION_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
 pub struct AppState {
     pub session_watcher: Mutex<Option<WatcherHandle>>,
@@ -28,6 +34,7 @@ pub struct AppState {
     pub watched_session_ongoing: Mutex<Option<(String, bool)>>,
     pub event_tx: broadcast::Sender<SseEvent>,
     sessions_cache: Mutex<Option<SessionsCache>>,
+    parsed_sessions: Mutex<HashMap<String, Arc<Mutex<IncrementalSession>>>>,
 }
 
 impl AppState {
@@ -40,7 +47,91 @@ impl AppState {
             watched_session_ongoing: Mutex::new(None),
             event_tx,
             sessions_cache: Mutex::new(None),
+            parsed_sessions: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn parsed_session(&self, path: &str) -> Result<Arc<Mutex<IncrementalSession>>, String> {
+        if path.is_empty() {
+            return Err(crate::commands::session::NO_SESSION_PATH_PROVIDED.to_string());
+        }
+
+        {
+            let cache = self.parsed_sessions.lock().map_err(|e| e.to_string())?;
+            if let Some(entry) = cache.get(path) {
+                return Ok(entry.clone());
+            }
+        }
+
+        let parsed = Arc::new(Mutex::new(IncrementalSession::load(std::path::Path::new(
+            path,
+        ))?));
+        let mut cache = self.parsed_sessions.lock().map_err(|e| e.to_string())?;
+        if let Some(entry) = cache.get(path) {
+            return Ok(entry.clone());
+        }
+        let parsed_size = parsed
+            .lock()
+            .map(|session| session.source_size_bytes())
+            .unwrap_or(0);
+        let mut cached_size: u64 = cache
+            .values()
+            .filter_map(|entry| entry.lock().ok().map(|session| session.source_size_bytes()))
+            .sum();
+        while (cache.len() >= MAX_PARSED_SESSION_CACHE_ENTRIES
+            || cached_size.saturating_add(parsed_size) > MAX_PARSED_SESSION_CACHE_BYTES)
+            && !cache.is_empty()
+        {
+            if let Some(oldest_key) = cache.keys().next().cloned() {
+                if let Some(oldest) = cache.remove(&oldest_key) {
+                    cached_size = cached_size.saturating_sub(
+                        oldest
+                            .lock()
+                            .map(|session| session.source_size_bytes())
+                            .unwrap_or(0),
+                    );
+                }
+            } else {
+                break;
+            }
+        }
+        cache.insert(path.to_string(), parsed.clone());
+        Ok(parsed)
+    }
+
+    /// Load a session from the shared parsed-session cache and return the requested page.
+    pub fn load_session_page(
+        &self,
+        path: &str,
+        direction: SessionPageDirection,
+        cursor: Option<usize>,
+        max_bytes: Option<usize>,
+    ) -> Result<CodexSession, String> {
+        let entry = self.parsed_session(path)?;
+        let mut session = entry.lock().map_err(|e| e.to_string())?;
+        let _ = session.refresh()?;
+        page_session(
+            session.session(),
+            direction,
+            cursor,
+            max_bytes,
+            session.source_size_bytes(),
+        )
+    }
+
+    /// Return the current complete snapshot for watcher setup and Tauri callers.
+    pub fn load_session_snapshot(&self, path: &str) -> Result<CodexSession, String> {
+        let entry = self.parsed_session(path)?;
+        let mut session = entry.lock().map_err(|e| e.to_string())?;
+        let _ = session.refresh()?;
+        Ok(session.session().clone())
+    }
+
+    /// Refresh a cached parser and return only the changed data for the live watcher.
+    pub fn refresh_session(&self, path: &str) -> Result<SessionRefresh, String> {
+        let entry = self.parsed_session(path)?;
+        let mut session = entry.lock().map_err(|e| e.to_string())?;
+        session.refresh()
     }
 
     pub fn stop_session_watcher(&self) -> Result<(), String> {
@@ -180,6 +271,7 @@ mod tests {
                     ai_title: None,
                     approval_mode: None,
                     history_base_thread_id: None,
+                    file_size_bytes: 0,
                 }],
             });
         }
@@ -227,6 +319,7 @@ mod tests {
                     ai_title: None,
                     approval_mode: None,
                     history_base_thread_id: None,
+                    file_size_bytes: 0,
                 }],
             });
         }

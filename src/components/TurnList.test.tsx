@@ -133,6 +133,11 @@ describe("TurnList", () => {
   it("shows token stat when total_tokens is set", () => {
     render(<TurnList turns={[makeTurn()]} selectedIndex={-1} onSelectTurn={vi.fn()} />);
     expect(screen.getByText("150 tok")).toBeInTheDocument();
+
+    const tokenStat = document.querySelector(".message__stat--tokens");
+    expect(tokenStat).toHaveAttribute("title", expect.stringContaining("Input: 100"));
+    expect(tokenStat).toHaveAttribute("title", expect.stringContaining("Output: 50"));
+    expect(tokenStat).toHaveAttribute("title", expect.stringContaining("Total: 150"));
   });
 
   it("shows duration stat when duration_ms is set", () => {
@@ -168,5 +173,28 @@ describe("TurnList", () => {
       />,
     );
     expect(screen.getByText("1 think")).toBeInTheDocument();
+  });
+
+  it("offers to load older turns for a backward paged session", () => {
+    const onLoadMore = vi.fn();
+    render(
+      <TurnList
+        turns={[makeTurn()]}
+        selectedIndex={0}
+        onSelectTurn={vi.fn()}
+        pagination={{
+          direction: "backward",
+          next_cursor: 1,
+          has_more: true,
+          total_turns: 4,
+          source_size_bytes: 20_000_000,
+          page_bytes: 10_000_000,
+        }}
+        onLoadMore={onLoadMore}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Load older turns/ }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
   });
 });

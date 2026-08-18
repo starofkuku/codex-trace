@@ -23,7 +23,12 @@ const routes: Record<string, Route> = {
   load_session: {
     method: "POST",
     path: "/api/session/load",
-    body: (a) => ({ path: a.path }),
+    body: (a) => ({
+      path: a.path,
+      direction: a.direction,
+      cursor: a.cursor,
+      maxBytes: a.maxBytes,
+    }),
   },
   watch_session: {
     method: "POST",

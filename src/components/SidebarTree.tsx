@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { CodexSessionInfo } from "../../shared/types";
-import { timeAgo } from "../../shared/format";
+import { formatFileSize, timeAgo } from "../../shared/format";
 import { sessionDisplayName } from "../lib/sessionDisplay";
 import { OngoingDots } from "./OngoingDots";
 
@@ -123,6 +123,9 @@ export function SidebarTree({
                       <div className="sidebar-tree__session-row">
                         <span className="sidebar-tree__session-label">{sessionDisplayName(s)}</span>
                         {s.is_ongoing && <OngoingDots count={1} />}
+                        <span className="sidebar-tree__size">
+                          {formatFileSize(s.file_size_bytes)}
+                        </span>
                         <span className="sidebar-tree__time">{timeAgo(s.start_time)}</span>
                       </div>
                       {(s.is_external_worker || workers) && (
@@ -174,6 +177,9 @@ export function SidebarTree({
                                 {sessionDisplayName(w)}
                               </span>
                               {w.is_ongoing && <OngoingDots count={1} />}
+                              <span className="sidebar-tree__size">
+                                {formatFileSize(w.file_size_bytes)}
+                              </span>
                               <span className="sidebar-tree__time">{timeAgo(w.start_time)}</span>
                             </div>
                           </div>

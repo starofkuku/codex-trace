@@ -95,6 +95,50 @@ describe("ToolCallItem", () => {
     expect(screen.getByText("shell")).toBeInTheDocument();
   });
 
+  it("renders Code Mode nested tool names and details", () => {
+    const { container } = render(
+      <ToolCallItem
+        tool={makeTool({
+          kind: "code_mode",
+          name: "exec",
+          command: null,
+          input_text: "await tools.exec_command({cmd: 'pwd'});",
+          nested_tool_calls: [
+            {
+              name: "exec_command",
+              kind: "exec_command",
+              arguments: { cmd: "pwd", workdir: "/tmp" },
+              input_text: null,
+              command: ["pwd"],
+              cwd: "/tmp",
+              mcp_server: null,
+              mcp_tool: null,
+            },
+            {
+              name: "apply_patch",
+              kind: "patch_apply",
+              arguments: {},
+              input_text: "*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch",
+              command: null,
+              cwd: null,
+              mcp_server: null,
+              mcp_tool: null,
+            },
+          ],
+        })}
+        expanded={true}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("exec (2 tools)")).toBeInTheDocument();
+    expect(container.querySelectorAll(".tool-call__nested-call")).toHaveLength(2);
+    expect(screen.getByText("exec_command")).toBeInTheDocument();
+    expect(screen.getByText("apply_patch")).toBeInTheDocument();
+    expect(container.querySelector(".tool-call__nested-command")?.textContent).toBe("pwd");
+    expect(screen.getByText("JavaScript")).toBeInTheDocument();
+  });
+
   it("calls onToggle when the header is clicked", () => {
     const onToggle = vi.fn();
     render(<ToolCallItem tool={makeTool()} expanded={false} onToggle={onToggle} />);

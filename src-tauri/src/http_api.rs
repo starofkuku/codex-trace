@@ -10,6 +10,7 @@ use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
@@ -68,7 +69,7 @@ pub async fn start_http_server_headless(state: Arc<AppState>) {
 }
 
 async fn run_server(state: Arc<HttpState>) {
-    let mut router = Router::new()
+    let api_router = Router::new()
         .route("/api/settings", get(api_get_settings))
         .route("/api/settings/dir", post(api_set_sessions_dir))
         .route("/api/sessions", post(api_discover_sessions))
@@ -77,7 +78,13 @@ async fn run_server(state: Arc<HttpState>) {
         .route("/api/session/unwatch", post(api_unwatch_session))
         .route("/api/picker/watch", post(api_watch_picker))
         .route("/api/picker/unwatch", post(api_unwatch_picker))
-        .route("/api/events", get(api_events));
+        // Compress finite JSON responses. The SSE route is merged below deliberately so its
+        // event flushes are never delayed by a compression buffer.
+        .layer(CompressionLayer::new());
+
+    let mut router = api_router
+        .merge(Router::new().route("/api/events", get(api_events)))
+        .layer(CorsLayer::permissive());
 
     if let Some(dir) = resolve_static_dir() {
         let serve = ServeDir::new(&dir).append_index_html_on_directories(true);
@@ -85,7 +92,7 @@ async fn run_server(state: Arc<HttpState>) {
         eprintln!("HTTP API: serving static assets from {dir}");
     }
 
-    let router = router.layer(CorsLayer::permissive()).with_state(state);
+    let router = router.with_state(state);
 
     let (host, port) = resolve_bind_addr();
     let addr = format!("{host}:{port}");
@@ -207,12 +214,33 @@ async fn api_discover_sessions(
 #[derive(Deserialize)]
 struct PathBody {
     path: String,
+    direction: Option<crate::parser::session::SessionPageDirection>,
+    cursor: Option<usize>,
+    #[serde(rename = "maxBytes")]
+    max_bytes: Option<usize>,
 }
 
-async fn api_load_session(Json(body): Json<PathBody>) -> Response {
-    let session = match crate::commands::session::load_session_from_path(&body.path) {
-        Ok(s) => s,
-        Err(e) => return err_response(session_load_error_status(&e), e),
+async fn api_load_session(
+    State(state): State<Arc<HttpState>>,
+    Json(body): Json<PathBody>,
+) -> Response {
+    let state = state.app_state.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        state.load_session_page(
+            &body.path,
+            body.direction
+                .unwrap_or(crate::parser::session::SessionPageDirection::Backward),
+            body.cursor,
+            body.max_bytes,
+        )
+    })
+    .await;
+    let session = match result {
+        Ok(Ok(session)) => session,
+        Ok(Err(e)) => return err_response(session_load_error_status(&e), e),
+        Err(e) => {
+            return err_response(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
     };
     ok_json(&session)
 }
@@ -225,16 +253,26 @@ async fn api_watch_session(
     State(state): State<Arc<HttpState>>,
     Json(body): Json<PathBody>,
 ) -> Response {
-    let app_state = app_state(&state);
-    let session = match crate::commands::session::load_session_from_path(&body.path) {
-        Ok(s) => s,
-        Err(e) => return err_response(session_load_error_status(&e), e),
+    let path = body.path;
+    let app_state = state.app_state.clone();
+    let result = tokio::task::spawn_blocking({
+        let app_state = app_state.clone();
+        let path = path.clone();
+        move || app_state.load_session_snapshot(&path)
+    })
+    .await;
+    let session = match result {
+        Ok(Ok(session)) => session,
+        Ok(Err(e)) => return err_response(session_load_error_status(&e), e),
+        Err(e) => {
+            return err_response(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
     };
     if let Err(e) = app_state.stop_session_watcher() {
         return err_response(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e);
     }
-    app_state.set_watched_ongoing(body.path.clone(), session.is_ongoing);
-    let handle = start_session_watcher(body.path, state.app_state.clone(), state.app.clone());
+    app_state.set_watched_ongoing(path.clone(), session.is_ongoing);
+    let handle = start_session_watcher(path, app_state.clone(), state.app.clone());
     if let Err(e) = app_state.set_session_watcher(handle) {
         return err_response(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e);
     }
