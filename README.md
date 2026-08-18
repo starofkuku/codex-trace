@@ -83,7 +83,8 @@ npm run dev:web          # web mode (opens browser)
 
 ### Run in Docker
 
-Docker is supported for web mode only.
+Docker is supported for web mode only. The image contains the Rust backend and
+downloads the independently published single-file frontend when it starts.
 
 ```bash
 docker build -t codex-trace .
@@ -121,11 +122,12 @@ Default sessions directory:
 
 Environment variables for headless and Docker mode:
 
-| Variable                | Default     | Description                    |
-| ----------------------- | ----------- | ------------------------------ |
-| `CODEXTRACE_HTTP_HOST`  | `127.0.0.1` | Bind host                      |
-| `CODEXTRACE_HTTP_PORT`  | `11424`     | Bind port                      |
-| `CODEXTRACE_STATIC_DIR` | —           | Path to built frontend `dist/` |
+| Variable                  | Default                   | Description                       |
+| ------------------------- | ------------------------- | --------------------------------- |
+| `CODEXTRACE_HTTP_HOST`    | `127.0.0.1`               | Bind host                         |
+| `CODEXTRACE_HTTP_PORT`    | `11424`                   | Bind port                         |
+| `CODEXTRACE_STATIC_DIR`   | —                         | Directory for the downloaded UI   |
+| `CODEXTRACE_FRONTEND_URL` | `frontend-latest` release | Single-file frontend download URL |
 
 ## Development
 

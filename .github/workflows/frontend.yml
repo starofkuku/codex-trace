@@ -1,0 +1,72 @@
+name: Publish frontend
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "shared/**"
+      - "index.html"
+      - "vite.config.ts"
+      - "tsconfig*.json"
+      - "package.json"
+      - "package-lock.json"
+      - "script/verify-single-file-build.mjs"
+      - ".github/workflows/frontend.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-latest
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Build and publish single-file frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check frontend
+        run: npx oxlint && npx oxfmt --check && npx vitest run
+
+      - name: Build single-file frontend
+        env:
+          VITE_API_BASE: ""
+        run: npm run build
+
+      - name: Publish frontend asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="frontend-latest"
+          ASSET="$RUNNER_TEMP/codex-trace-frontend.html"
+          cp dist/index.html "$ASSET"
+
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Latest frontend" \
+              --notes "Automatically updated single-file web frontend." \
+              --prerelease
+          fi
+
+          gh release upload "$TAG" "$ASSET" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+          echo "Published https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/codex-trace-frontend.html" >> "$GITHUB_STEP_SUMMARY"

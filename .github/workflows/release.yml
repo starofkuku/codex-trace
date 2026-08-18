@@ -221,9 +221,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -249,12 +246,12 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=codex-trace
-          cache-to: type=gha,mode=max,scope=codex-trace
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/codex-trace:buildcache-amd64
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/codex-trace:buildcache-amd64,mode=max
 
   publish:
     name: Publish release (flip draft → public)

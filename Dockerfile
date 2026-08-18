@@ -3,9 +3,8 @@
 # =============================================================================
 # Codex Trace — Docker image
 #
-# Runs the Rust/axum backend in headless mode behind a virtual X display.
-# The React frontend is built to a static bundle and served from the same
-# axum process, so the whole app is reachable on a single port.
+# Runs the Rust/axum backend in headless mode. The frontend is published
+# independently as a single HTML file and downloaded when the container starts.
 #
 # Build:
 #   docker build -t codex-trace .
@@ -18,34 +17,16 @@
 # Then open http://localhost:1422 in a browser.
 #
 # Configurable env vars:
-#   CODEXTRACE_HTTP_HOST   bind host    (default: 0.0.0.0 in this image)
-#   CODEXTRACE_HTTP_PORT   bind port    (default: 1422 in this image)
-#   CODEXTRACE_STATIC_DIR  static dist  (default: /app/dist in this image)
+#   CODEXTRACE_HTTP_HOST     bind host      (default: 0.0.0.0 in this image)
+#   CODEXTRACE_HTTP_PORT     bind port      (default: 1422 in this image)
+#   CODEXTRACE_STATIC_DIR    downloaded UI  (default: /app/dist in this image)
+#   CODEXTRACE_FRONTEND_URL  single HTML URL (default: frontend-latest release)
 # =============================================================================
 
 ARG RUST_IMAGE=rust:latest
-ARG NODE_VERSION=24
-ARG DEBIAN_CODENAME=bookworm
 
 # -----------------------------------------------------------------------------
-# Stage 1 — build the React frontend
-# -----------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-${DEBIAN_CODENAME}-slim AS frontend-builder
-
-WORKDIR /build
-
-COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
-
-COPY tsconfig.json tsconfig.node.json vite.config.ts index.html ./
-COPY src ./src
-COPY shared ./shared
-
-ENV VITE_API_BASE=""
-RUN npm run build
-
-# -----------------------------------------------------------------------------
-# Stage 2 — build the Rust backend
+# Stage 1 — build the Rust backend
 # -----------------------------------------------------------------------------
 FROM ${RUST_IMAGE} AS backend-builder
 
@@ -69,11 +50,8 @@ WORKDIR /build/src-tauri
 # optimisation while keeping peak RSS under control.
 RUN CARGO_PROFILE_RELEASE_LTO=thin cargo build --release --locked --jobs 2 --bin codex-trace
 
-WORKDIR /build
-COPY --from=frontend-builder /build/dist ./dist
-
 # -----------------------------------------------------------------------------
-# Stage 3 — runtime image
+# Stage 2 — runtime image
 # -----------------------------------------------------------------------------
 FROM debian:trixie-slim AS runtime
 
@@ -86,19 +64,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xauth \
         dumb-init \
         ca-certificates \
+        curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --home-dir /home/app --shell /bin/bash --uid 1000 app
+    && useradd --create-home --home-dir /home/app --shell /bin/bash --uid 1000 app \
+    && install -d -o app -g app /app/dist
 
 WORKDIR /app
 
 COPY --from=backend-builder /build/src-tauri/target/release/codex-trace /usr/local/bin/codex-trace
-COPY --from=frontend-builder /build/dist /app/dist
 COPY script/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV CODEXTRACE_HTTP_HOST=0.0.0.0 \
     CODEXTRACE_HTTP_PORT=1422 \
     CODEXTRACE_STATIC_DIR=/app/dist \
+    CODEXTRACE_FRONTEND_URL=https://github.com/starofkuku/codex-trace/releases/download/frontend-latest/codex-trace-frontend.html \
     XDG_CONFIG_HOME=/home/app/.config \
     XDG_DATA_HOME=/home/app/.local/share
 

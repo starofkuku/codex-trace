@@ -4,6 +4,26 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.3] — 2026-08-18
+
+This release separates the Docker backend from the web frontend for faster,
+independent deployments.
+
+### Added
+
+- **Single-file frontend releases**. Frontend changes now build one self-contained HTML
+  file and publish it to the stable `frontend-latest` GitHub Release asset.
+
+### Changed
+
+- **Docker images are AMD64-only**. Release builds no longer emulate ARM64 through QEMU.
+- **Docker downloads the frontend at startup**. The image contains only the Rust backend;
+  `CODEXTRACE_FRONTEND_URL` selects the HTML file served by the existing HTTP server.
+- **Docker cache is shared through Docker Hub**. Backend layers can now be reused across
+  version tags instead of being isolated in tag-scoped GitHub Actions caches.
+
+[0.4.3]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.3
+
 ## [0.4.2] — 2026-08-17
 
 This patch restores release builds for the current Codex item-completion parser.

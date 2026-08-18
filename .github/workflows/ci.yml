@@ -43,6 +43,14 @@ jobs:
       - name: Frontend tests
         run: npx vitest run
 
+      - name: Single-file frontend build
+        env:
+          VITE_API_BASE: ""
+        run: npm run build
+
+      - name: Docker entrypoint tests
+        run: sh script/docker-entrypoint.test.sh
+
       - name: Rust format check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
