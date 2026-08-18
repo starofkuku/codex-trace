@@ -18,7 +18,9 @@ download_frontend() {
         --silent \
         --show-error \
         --retry 3 \
-        --retry-all-errors \
+        --retry-connrefused \
+        --connect-timeout 10 \
+        --max-time 120 \
         --proto '=https' \
         --proto-redir '=https' \
         --output "$tmp_file" \

@@ -4,6 +4,16 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.4] — 2026-08-18
+
+### Fixed
+
+- **Docker frontend download startup hang**. Use bounded connection and transfer
+  timeouts while retrying connection refusals, avoiding a curl retry behavior that
+  could stall on GitHub Release redirects.
+
+[0.4.4]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.4
+
 ## [0.4.3] — 2026-08-18
 
 This release separates the Docker backend from the web frontend for faster,
