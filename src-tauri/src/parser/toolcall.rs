@@ -98,6 +98,7 @@ pub struct PendingCall {
 pub struct ToolCallBuilder {
     pub pending: HashMap<String, PendingCall>,
     pub finalized: Vec<ToolCall>,
+    custom_call_started_at_ms: HashMap<String, u64>,
     pty_sessions: HashMap<String, String>,
     running_exec_call_ids: Vec<String>,
     /// Codex v0.141.0+ (PRs #27365, #27371): maps tool names to (tool_type, server).
@@ -111,6 +112,7 @@ impl ToolCallBuilder {
         Self {
             pending: HashMap::new(),
             finalized: Vec::new(),
+            custom_call_started_at_ms: HashMap::new(),
             pty_sessions: HashMap::new(),
             running_exec_call_ids: Vec::new(),
             dynamic_tool_registry: HashMap::new(),
@@ -153,7 +155,17 @@ impl ToolCallBuilder {
     }
 
     /// Register a custom_tool_call (apply_patch etc).
-    pub fn add_custom_tool_call(&mut self, call_id: String, name: String, input: Option<String>) {
+    pub fn add_custom_tool_call(
+        &mut self,
+        call_id: String,
+        name: String,
+        input: Option<String>,
+        started_at_ms: Option<u64>,
+    ) {
+        if let Some(started_at_ms) = started_at_ms {
+            self.custom_call_started_at_ms
+                .insert(call_id.clone(), started_at_ms);
+        }
         self.pending.insert(
             call_id,
             PendingCall {
@@ -173,8 +185,15 @@ impl ToolCallBuilder {
         call_id: &str,
         output: &str,
         exit_code: Option<i32>,
+        completed_at_ms: Option<u64>,
     ) {
         if let Some(pending) = self.pending.remove(call_id) {
+            let duration_secs = self
+                .custom_call_started_at_ms
+                .remove(call_id)
+                .zip(completed_at_ms)
+                .and_then(|(started, completed)| completed.checked_sub(started))
+                .map(|duration_ms| duration_ms as f64 / 1000.0);
             self.finalized.push(ToolCall {
                 call_id: call_id.to_string(),
                 kind: ToolKind::PatchApply,
@@ -185,7 +204,7 @@ impl ToolCallBuilder {
                 exit_code,
                 command: None,
                 cwd: None,
-                duration_secs: None,
+                duration_secs,
                 mcp_server: None,
                 mcp_tool: None,
                 plugin_id: None,

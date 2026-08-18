@@ -4,6 +4,15 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.5] — 2026-08-18
+
+### Fixed
+
+- **Current Codex tool-call durations**. Parse the start and completion timestamps
+  of current-format `custom_tool_call` entries so the UI can display their duration.
+
+[0.4.5]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.5
+
 ## [0.4.4] — 2026-08-18
 
 ### Fixed

@@ -121,6 +121,13 @@ pub fn parse_timestamp_secs(ts: &str) -> Option<u64> {
     Some(dt.timestamp() as u64)
 }
 
+/// Parse an ISO timestamp string to Unix milliseconds (u64).
+pub fn parse_timestamp_millis(ts: &str) -> Option<u64> {
+    use chrono::DateTime;
+    let dt = ts.parse::<DateTime<chrono::Utc>>().ok()?;
+    Some(dt.timestamp_millis() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

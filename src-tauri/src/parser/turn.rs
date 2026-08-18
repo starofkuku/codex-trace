@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::entry::{parse_timestamp_secs, RawEntry};
+use super::entry::{parse_timestamp_millis, parse_timestamp_secs, RawEntry};
 use super::spawn::parse_spawn_agent_output;
 use super::toolcall::{ToolCall, ToolCallBuilder};
 
@@ -1015,7 +1015,8 @@ fn handle_response_item(
                 .get("input")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            builder.add_custom_tool_call(call_id, name, input);
+            let started_at_ms = entry.timestamp.as_deref().and_then(parse_timestamp_millis);
+            builder.add_custom_tool_call(call_id, name, input, started_at_ms);
         }
 
         "custom_tool_call_output" => {
@@ -1038,7 +1039,8 @@ fn handle_response_item(
                         .and_then(|c| c.as_i64())
                         .map(|c| c as i32)
                 });
-            builder.finalize_custom_tool_output(&call_id, &output, exit_code);
+            let completed_at_ms = entry.timestamp.as_deref().and_then(parse_timestamp_millis);
+            builder.finalize_custom_tool_output(&call_id, &output, exit_code, completed_at_ms);
         }
 
         // Codex v0.129.0 (PR #20540): apply_patch file changes moved from the
@@ -1656,6 +1658,25 @@ mod tests {
         );
         assert_eq!(turn.final_answer.as_deref(), Some("The parser is updated."));
         assert!(turn.agent_messages[0].order < turn.agent_messages[1].order);
+    }
+
+    #[test]
+    fn current_custom_tool_call_duration_uses_event_timestamps() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-08-17T10:00:00.000Z","type":"session_meta","payload":{"id":"current-custom-tool","timestamp":"2026-08-17T10:00:00.000Z"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:01.125Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:01.125Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call-exec","name":"exec","input":"tools.exec_command({cmd:\"echo hello\"})"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:03.625Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-exec","output":[{"type":"input_text","text":"Script completed\nWall time 2.5 seconds\nOutput:\nhello\n"}]}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:04.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1786960804.0}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].tool_calls.len(), 1);
+        let tool = &turns[0].tool_calls[0];
+        assert_eq!(tool.name, "exec");
+        assert_eq!(tool.duration_secs, Some(2.5));
     }
 
     #[test]
