@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseApplyPatch } from "./patch";
+import { parseApplyPatch, parseUnifiedDiff } from "./patch";
 
 describe("parseApplyPatch", () => {
   it("returns null for non-patch text", () => {
@@ -111,5 +111,25 @@ describe("parseApplyPatch", () => {
     const patch = ["*** Begin Patch", "*** Add File: f.txt", "+hi", "*** End Patch", ""].join("\n");
     const files = parseApplyPatch(patch)!;
     expect(files[0].hunks[0].lines.map((l) => l.kind)).toEqual(["added"]);
+  });
+
+  it("parses current FileChange unified diffs with old and new line numbers", () => {
+    const hunks = parseUnifiedDiff("@@ -10,2 +10,2 @@\n-old\n+new\n keep");
+
+    expect(hunks).toHaveLength(1);
+    expect(hunks[0].header).toBe("-10,2 +10,2 @@");
+    expect(hunks[0].lines.map((line) => line.kind)).toEqual(["removed", "added", "context"]);
+    expect(hunks[0].lines.map(({ oldLine, newLine }) => [oldLine, newLine])).toEqual([
+      [10, null],
+      [null, 10],
+      [11, 11],
+    ]);
+  });
+
+  it("parses multiple FileChange hunks", () => {
+    const hunks = parseUnifiedDiff("@@ -1 +1 @@\n-a\n+b\n@@ -20,0 +21 @@\n+new line");
+
+    expect(hunks).toHaveLength(2);
+    expect(hunks[1].lines[0]).toMatchObject({ kind: "added", oldLine: null, newLine: 21 });
   });
 });

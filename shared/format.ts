@@ -10,6 +10,20 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Input token count after removing tokens served from the prompt cache. */
+export function nonCachedInputTokens(inputTokens: number, cachedInputTokens: number): number {
+  return Math.max(0, inputTokens - cachedInputTokens);
+}
+
+/** Matches Codex's displayed total: non-cached input plus all output tokens. */
+export function displayedTokenTotal(
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+): number {
+  return nonCachedInputTokens(inputTokens, cachedInputTokens) + outputTokens;
+}
+
 /** Formats a file size using binary units: 1024 -> "1.0 KB". */
 export function formatFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "0 B";

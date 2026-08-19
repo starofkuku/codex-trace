@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   contextRemainingPercent,
+  displayedTokenTotal,
   formatDuration,
   formatFileSize,
   formatTokens,
+  nonCachedInputTokens,
   shortPath,
   timeAgo,
   truncate,
@@ -67,6 +69,17 @@ describe("formatTokens", () => {
   it("formats millions with M suffix", () => {
     expect(formatTokens(1_000_000)).toBe("1.0M");
     expect(formatTokens(2_500_000)).toBe("2.5M");
+  });
+});
+
+describe("displayedTokenTotal", () => {
+  it("excludes cached input to match Codex's status display", () => {
+    expect(nonCachedInputTokens(944_200_000, 848_300_000)).toBe(95_900_000);
+    expect(displayedTokenTotal(944_200_000, 848_300_000, 5_000_000)).toBe(100_900_000);
+  });
+
+  it("does not return a negative input count for malformed usage data", () => {
+    expect(nonCachedInputTokens(20, 30)).toBe(0);
   });
 });
 

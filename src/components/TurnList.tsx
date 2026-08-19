@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import type { CodexTurn, SessionPagination } from "../../shared/types";
-import { formatDuration, formatTokens } from "../../shared/format";
+import { displayedTokenTotal, formatDuration, formatTokens } from "../../shared/format";
 import { formatExactTime } from "../lib/format";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { useScrollToSelected } from "../hooks/useScrollToSelected";
@@ -101,10 +101,13 @@ export function TurnList({
         const userMsg = turn.user_message ?? "";
         const userExpanded = expandedUsers.has(i);
         const agentPreview =
+          turn.error ??
           turn.agent_messages.find((m) => m.phase === "final_answer")?.text ??
           turn.agent_messages.find((m) => !m.is_reasoning)?.text ??
           null;
-        const hasDetail = turn.agent_messages.length > 0 || turn.tool_calls.length > 0;
+        const hasDetail = Boolean(
+          turn.error || turn.agent_messages.length > 0 || turn.tool_calls.length > 0,
+        );
         const reasoningCount = turn.agent_messages.filter((m) => m.is_reasoning).length;
         const userTs = turn.started_at
           ? formatExactTime(new Date(turn.started_at * 1000).toISOString())
@@ -179,28 +182,35 @@ export function TurnList({
 
               {agentPreview && (
                 <div
-                  className={`message__content${!expandedCodex.has(i) ? " message__content--collapsed" : ""}`}
+                  className={`message__content${turn.error ? " message__content--error" : ""}${!expandedCodex.has(i) ? " message__content--collapsed" : ""}`}
                 >
                   {agentPreview}
                 </div>
               )}
 
-              {(turn.total_tokens || turn.tool_calls.length > 0 || turn.duration_ms !== null) && (
+              {(turn.turn_tokens || turn.tool_calls.length > 0 || turn.duration_ms !== null) && (
                 <div className="message__stats">
                   {turn.status !== "ongoing" && (
                     <span className={`message__stat turn-list__status--${turn.status}`}>
                       {statusIcon(turn.status)}
                     </span>
                   )}
-                  {(turn.total_tokens?.total_tokens ?? 0) > 0 && (
+                  {(turn.turn_tokens?.total_tokens ?? 0) > 0 && (
                     <span
                       className="message__stat message__stat--tokens"
-                      title={tokenBreakdownTitle(turn.total_tokens!)}
+                      title={tokenBreakdownTitle(turn.turn_tokens!)}
                     >
                       <span className="message__stat-icon">
                         <TokensIcon />
                       </span>
-                      {formatTokens(turn.total_tokens!.total_tokens)} tok
+                      {formatTokens(
+                        displayedTokenTotal(
+                          turn.turn_tokens!.input_tokens,
+                          turn.turn_tokens!.cached_input_tokens,
+                          turn.turn_tokens!.output_tokens,
+                        ),
+                      )}{" "}
+                      tok
                     </span>
                   )}
                   {turn.tool_calls.length > 0 && (

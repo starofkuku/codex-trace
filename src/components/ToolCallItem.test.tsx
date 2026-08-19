@@ -194,6 +194,23 @@ describe("ToolCallItem", () => {
     expect(screen.getByText("500ms")).toBeInTheDocument();
   });
 
+  it("renders current CommandExecution items with a Codex-style action label", () => {
+    render(
+      <ToolCallItem
+        tool={makeTool({
+          name: "command_execution",
+          command: ["/usr/bin/bash", "-lc", "rg -n parser src"],
+          arguments: { parsed_cmd: [{ type: "search", cmd: "rg -n parser src" }] },
+        })}
+        expanded={false}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Searched")).toBeInTheDocument();
+    expect(screen.getByText("rg -n parser src")).toBeInTheDocument();
+  });
+
   it("places duration left of the popout button in DOM order", () => {
     const { container } = render(
       <ToolCallItem tool={makeTool({ duration_secs: 0.5 })} expanded={false} onToggle={vi.fn()} />,
@@ -341,6 +358,42 @@ describe("ToolCallItem", () => {
     // File path appears in both the summary and the expanded body; assert the patch file entry.
     expect(container.querySelector(".tool-call__patch-file")).toBeInTheDocument();
     expect(container.querySelector(".tool-call__patch-file")!.textContent).toContain("src/main.rs");
+  });
+
+  it("renders current FileChange items with relative path, line counts, and numbered diff", () => {
+    const { container } = render(
+      <ToolCallItem
+        tool={makeTool({
+          kind: "patch_apply",
+          name: "file_change",
+          cwd: "/work/project",
+          command: null,
+          exit_code: null,
+          duration_secs: 0.244,
+          patch_changes: {
+            "/work/project/src/main.rs": {
+              type: "update",
+              unified_diff: "@@ -10,2 +10,2 @@\n-old\n+new\n keep",
+              move_path: null,
+            },
+          },
+        })}
+        expanded={true}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Edited")).toBeInTheDocument();
+    expect(screen.getByText("src/main.rs (+1 -1)")).toBeInTheDocument();
+    expect(screen.getByText("244ms")).toBeInTheDocument();
+    expect(container.querySelector(".tool-call__patch-path")?.textContent).toBe("src/main.rs");
+    expect(
+      Array.from(container.querySelectorAll(".tool-call__diff-line-number")).map(
+        (node) => node.textContent,
+      ),
+    ).toEqual(["10", "", "", "10", "11", "11"]);
+    expect(container.querySelector(".tool-call__diff-line--removed")?.textContent).toContain("old");
+    expect(container.querySelector(".tool-call__diff-line--added")?.textContent).toContain("new");
   });
 
   it("renders a structured red/green diff from an apply_patch input_text", () => {

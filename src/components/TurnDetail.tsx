@@ -1,5 +1,5 @@
 import type { AgentMessage, CodexToolCall, CodexTurn } from "../../shared/types";
-import { ToolCallItem } from "./ToolCallItem";
+import { RawExecDetails, ToolCallItem } from "./ToolCallItem";
 import { ComplementaryItem } from "./ComplementaryItem";
 import { OngoingDots } from "./OngoingDots";
 import { BackIcon, CodexIcon } from "./Icons";
@@ -31,7 +31,8 @@ export function TurnDetail({
   );
   const reasoning = turn.agent_messages.filter((m) => m.is_reasoning);
   const finalAnswer = turn.agent_messages.find((m) => m.phase === "final_answer");
-  const tokenInfo = turn.total_tokens;
+  const tokenSnapshot = turn.total_tokens;
+  const turnTokens = turn.turn_tokens;
 
   // Interleave commentary messages with tool calls by their stream order, so each tool call
   // shows up inline where it actually happened instead of being dumped at the end of the turn.
@@ -39,14 +40,55 @@ export function TurnDetail({
   // which reproduces the previous "messages first, tools after" layout.
   type TimelineItem =
     | { order: number; kind: "msg"; msg: AgentMessage }
-    | { order: number; kind: "tool"; tool: CodexToolCall; index: number };
+    | { order: number; kind: "tool"; tool: CodexToolCall; index: number }
+    | { order: number; kind: "raw_exec"; tool: CodexToolCall };
   const timeline: TimelineItem[] = [];
   commentary.forEach((msg) => {
     timeline.push({ order: msg.order ?? 0, kind: "msg", msg });
   });
+  const codeModeCalls = turn.tool_calls
+    .map((tool, index) => ({ tool, index, order: turn.tool_call_orders?.[index] }))
+    .filter(({ tool, order }) => tool.kind === "code_mode" && order !== undefined)
+    .toSorted((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const redundantCodeModeIndexes = new Set<number>();
+  codeModeCalls.forEach(({ tool, index, order }, codeModeIndex) => {
+    const nextOrder = codeModeCalls[codeModeIndex + 1]?.order ?? Number.MAX_SAFE_INTEGER;
+    const nestedKinds = (tool.nested_tool_calls ?? []).map((call) => call.kind);
+    if (
+      nestedKinds.length === 0 ||
+      nestedKinds.some((kind) => kind !== "exec_command" && kind !== "patch_apply")
+    ) {
+      return;
+    }
+    const structuredKinds = turn.tool_calls
+      .map((candidate, candidateIndex) => ({
+        candidate,
+        candidateOrder: turn.tool_call_orders?.[candidateIndex] ?? Number.MAX_SAFE_INTEGER,
+      }))
+      .filter(
+        ({ candidate, candidateOrder }) =>
+          (candidate.name === "command_execution" || candidate.name === "file_change") &&
+          candidateOrder > (order ?? Number.MAX_SAFE_INTEGER) &&
+          candidateOrder < nextOrder,
+      )
+      .map(({ candidate }) => candidate.kind);
+    const remaining = [...structuredKinds];
+    const allRepresented = nestedKinds.every((kind) => {
+      const match = remaining.indexOf(kind);
+      if (match < 0) return false;
+      remaining.splice(match, 1);
+      return true;
+    });
+    if (allRepresented) redundantCodeModeIndexes.add(index);
+  });
+
   turn.tool_calls.forEach((tool, index) => {
     const order = turn.tool_call_orders?.[index] ?? Number.MAX_SAFE_INTEGER;
-    timeline.push({ order, kind: "tool", tool, index });
+    timeline.push(
+      redundantCodeModeIndexes.has(index)
+        ? { order, kind: "raw_exec", tool }
+        : { order, kind: "tool", tool, index },
+    );
   });
   timeline.sort((a, b) => a.order - b.order);
   const model = turn.model ? shortModel(turn.model) : "";
@@ -54,14 +96,17 @@ export function TurnDetail({
 
   const metaParts: string[] = [];
   if (turn.duration_ms) metaParts.push(formatDuration(turn.duration_ms));
-  const contextLeftPercent = tokenInfo
-    ? contextRemainingPercent(tokenInfo.context_window_tokens, tokenInfo.model_context_window)
+  const contextLeftPercent = tokenSnapshot
+    ? contextRemainingPercent(
+        tokenSnapshot.context_window_tokens,
+        tokenSnapshot.model_context_window,
+      )
     : null;
   const contextUsedPercent = contextLeftPercent === null ? null : 100 - contextLeftPercent;
   const contextTitle =
-    tokenInfo && tokenInfo.context_window_tokens !== null
-      ? `${formatTokens(tokenInfo.context_window_tokens)} / ${formatTokens(
-          tokenInfo.model_context_window,
+    tokenSnapshot && tokenSnapshot.context_window_tokens !== null
+      ? `${formatTokens(tokenSnapshot.context_window_tokens)} / ${formatTokens(
+          tokenSnapshot.model_context_window,
         )} context tokens`
       : undefined;
 
@@ -102,10 +147,10 @@ export function TurnDetail({
 
       <div className="turn-detail__body">
         <div className="turn-detail__content">
-          {tokenInfo && (
+          {turnTokens && (
             <div className="turn-detail__token-summary">
-              <div className="turn-detail__section-label">Token usage</div>
-              <TokenBar tokens={tokenInfo} />
+              <div className="turn-detail__section-label">This turn</div>
+              <TokenBar tokens={turnTokens} />
             </div>
           )}
 
@@ -146,6 +191,8 @@ export function TurnDetail({
               {timeline.map((item, i) =>
                 item.kind === "msg" ? (
                   <ComplementaryItem key={`m-${item.msg.timestamp || i}`} msg={item.msg} />
+                ) : item.kind === "raw_exec" ? (
+                  <RawExecDetails key={`raw-${item.tool.call_id || i}`} tool={item.tool} />
                 ) : (
                   <ToolCallItem
                     key={`t-${item.tool.call_id || item.index}`}

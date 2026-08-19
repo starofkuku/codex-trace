@@ -4,6 +4,24 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.8] — 2026-08-19
+
+### Added
+
+- **Per-turn token accounting**. Derive each turn's usage from Codex cumulative snapshots and
+  show non-cached input, cached input, output, reasoning, and Codex-compatible totals.
+- **CLI-style structured tool traces**. Parse current `CommandExecution` and `FileChange` items,
+  show action labels and durations, and render file edits with line counts and numbered diffs.
+
+### Fixed
+
+- **Terminal errors remain visible**. Preserve `task_complete.error` messages in turn previews
+  and details instead of leaving failed turns blank.
+- **Code Mode wrappers no longer obscure operations**. Prefer current structured tool items and
+  keep the duplicate outer `exec` payload available under collapsed raw details.
+
+[0.4.8]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.8
+
 ## [0.4.7] — 2026-08-18
 
 ### Added

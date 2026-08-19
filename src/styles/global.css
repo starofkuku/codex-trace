@@ -1054,6 +1054,9 @@ body {
   overflow: hidden;
   position: relative;
 }
+.message__content--error {
+  color: var(--error);
+}
 
 .message__content--collapsed::after {
   content: "";
@@ -3252,8 +3255,26 @@ body {
   font-family: inherit;
 }
 .tool-call__diff-line {
+  display: flex;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.tool-call__diff-line-number {
+  width: 40px;
+  flex: 0 0 40px;
+  padding-right: 8px;
+  color: var(--text-muted);
+  text-align: right;
+  user-select: none;
+  opacity: 0.7;
+}
+.tool-call__diff-line--numbered .tool-call__diff-marker {
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+  width: 22px;
+}
+.tool-call__diff-content {
+  min-width: 0;
 }
 .tool-call__diff-line--context {
   color: var(--text-dim);
@@ -3286,6 +3307,19 @@ body {
   align-items: center;
   gap: 6px;
   margin-bottom: 2px;
+}
+.tool-call__diff-hunk-header {
+  padding: 3px 8px;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+}
+.tool-call__diff-hunk-header + .tool-call__diff {
+  margin-top: 0;
 }
 .tool-call__patch-path {
   color: var(--text-secondary);
@@ -3328,6 +3362,26 @@ body {
 .tool-call__popout-btn:hover {
   color: var(--accent);
   background: var(--bg-hover);
+}
+.tool-call__raw-details {
+  margin: 0 0 6px 28px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.tool-call__raw-details > summary {
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+}
+.tool-call__raw-details > summary:hover {
+  color: var(--text-secondary);
+}
+.tool-call__raw-body {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
 }
 
 /* Popout body: remove max-height constraints */

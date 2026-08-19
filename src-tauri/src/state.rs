@@ -284,6 +284,26 @@ impl AppState {
             }
         }
 
+        // Keep the short-lived picker cache consistent with incremental activity updates. A
+        // structural change is invalidated by the watcher after this method returns.
+        drop(trackers);
+        if !result.structure_changed && !result.updates.is_empty() {
+            if let Ok(mut cache) = self.sessions_cache.lock() {
+                if let Some(cache) = cache.as_mut() {
+                    if cache.dir == sessions_dir {
+                        for update in &result.updates {
+                            if let Some(session) =
+                                cache.sessions.iter_mut().find(|s| s.path == update.path)
+                            {
+                                session.is_ongoing = update.is_ongoing;
+                                session.file_size_bytes = update.file_size_bytes;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(result)
     }
 

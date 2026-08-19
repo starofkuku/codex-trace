@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { CodexToolCall, NestedToolCall } from "../../shared/types";
 import { formatDuration } from "../../shared/format";
 import type { DiffLine } from "../../shared/diff";
-import { parseApplyPatch, type PatchFile } from "../../shared/patch";
+import { parseApplyPatch, parseUnifiedDiff, type PatchFile } from "../../shared/patch";
 import { formatJson } from "../lib/format";
 import {
   ExecIcon,
@@ -121,7 +121,85 @@ function nestedSummaryText(tool: NestedToolCall): string | null {
   }
 }
 
+interface ParsedCommand {
+  type?: string;
+  cmd?: string;
+}
+
+function parsedCommands(tool: CodexToolCall): ParsedCommand[] {
+  const value = tool.arguments?.parsed_cmd;
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry): entry is ParsedCommand => entry !== null && typeof entry === "object",
+  );
+}
+
+function commandLabel(tool: CodexToolCall): string {
+  const types = parsedCommands(tool)
+    .map((command) => command.type)
+    .filter(Boolean);
+  if (types.length === 0 || types.includes("unknown")) return "Ran";
+  if (types.every((type) => type === "search")) return "Searched";
+  if (types.every((type) => type === "list_files")) return "Listed";
+  if (types.every((type) => type === "read")) return "Read";
+  if (types.every((type) => type === "read" || type === "search" || type === "list_files")) {
+    return "Searched";
+  }
+  return "Ran";
+}
+
+function commandSummary(tool: CodexToolCall): string | null {
+  const parsed = parsedCommands(tool)
+    .map((command) => command.cmd)
+    .filter((command): command is string => Boolean(command));
+  if (parsed.length > 0) return parsed.join("; ");
+  return tool.command ? tool.command.join(" ") : null;
+}
+
+function cleanFileUri(path: string): string {
+  return path.startsWith("file://") ? path.slice("file://".length) : path;
+}
+
+function displayPath(path: string, cwd: string | null): string {
+  const cleanPath = cleanFileUri(path);
+  const cleanCwd = cwd ? cleanFileUri(cwd).replace(/\/$/, "") : null;
+  if (cleanCwd && cleanPath.startsWith(`${cleanCwd}/`)) {
+    return cleanPath.slice(cleanCwd.length + 1);
+  }
+  return cleanPath;
+}
+
+function patchFilesFromChanges(tool: CodexToolCall): PatchFile[] {
+  if (!tool.patch_changes) return [];
+  return Object.entries(tool.patch_changes).map(([path, change]) => ({
+    path,
+    op: change.type === "add" || change.type === "delete" ? change.type : "update",
+    movePath: change.move_path ?? null,
+    hunks: change.unified_diff ? parseUnifiedDiff(change.unified_diff) : [],
+  }));
+}
+
+function patchSummary(tool: CodexToolCall): string | null {
+  const files = patchFilesFromChanges(tool);
+  if (files.length === 0) return null;
+  let added = 0;
+  let removed = 0;
+  let hasDiff = false;
+  for (const file of files) {
+    for (const hunk of file.hunks) {
+      hasDiff = true;
+      added += hunk.lines.filter((line) => line.kind === "added").length;
+      removed += hunk.lines.filter((line) => line.kind === "removed").length;
+    }
+  }
+  const paths = files.map((file) => displayPath(file.path, tool.cwd));
+  const label = paths.length <= 2 ? paths.join(", ") : `${paths[0]} +${paths.length - 1} files`;
+  return hasDiff ? `${label} (+${added} -${removed})` : label;
+}
+
 function toolHeaderName(tool: CodexToolCall): string {
+  if (tool.name === "command_execution") return commandLabel(tool);
+  if (tool.name === "file_change") return "Edited";
   if (tool.kind !== "code_mode") return tool.name;
   const nested = tool.nested_tool_calls ?? [];
   if (nested.length === 1) return nestedDisplayName(nested[0]);
@@ -137,14 +215,14 @@ function summaryText(tool: CodexToolCall): string | null {
       return nested.map((call) => nestedSummaryText(call) ?? nestedDisplayName(call)).join(", ");
     }
     case "exec_command":
-      return tool.command ? tool.command.join(" ") : null;
+      return commandSummary(tool);
     case "web_search":
       return tool.web_query;
     case "image_generation":
       return tool.image_prompt;
     case "patch_apply":
       if (tool.patch_changes) {
-        return Object.keys(tool.patch_changes).join(", ");
+        return patchSummary(tool);
       }
       return null;
     case "mcp_tool": {
@@ -196,6 +274,7 @@ const DIFF_MARKER: Record<DiffLine["kind"], string> = {
 // highlighting. Keys mix index + byte offset + kind because lines and segments
 // can repeat, so a bare index would not be unique.
 function DiffLines({ lines }: { lines: DiffLine[] }) {
+  const numbered = lines.some((line) => line.oldLine !== undefined || line.newLine !== undefined);
   const rows = lines.map((line, i) => {
     const lineKey = `${line.kind}${i}`;
     let offset = 0;
@@ -208,6 +287,8 @@ function DiffLines({ lines }: { lines: DiffLine[] }) {
       key: lineKey,
       className: DIFF_LINE_CLASS[line.kind],
       marker: DIFF_MARKER[line.kind],
+      oldLine: line.oldLine,
+      newLine: line.newLine,
       segs,
     };
   });
@@ -215,17 +296,28 @@ function DiffLines({ lines }: { lines: DiffLine[] }) {
     <pre className="tool-call__block tool-call__diff">
       <code>
         {rows.map((row) => (
-          <div key={row.key} className={row.className}>
-            <span className="tool-call__diff-marker">{row.marker}</span>
-            {row.segs.map((seg) =>
-              seg.changed ? (
-                <span key={seg.key} className="tool-call__diff-word">
-                  {seg.text}
-                </span>
-              ) : (
-                <span key={seg.key}>{seg.text}</span>
-              ),
+          <div
+            key={row.key}
+            className={`${row.className}${numbered ? " tool-call__diff-line--numbered" : ""}`}
+          >
+            {numbered && (
+              <>
+                <span className="tool-call__diff-line-number">{row.oldLine ?? ""}</span>
+                <span className="tool-call__diff-line-number">{row.newLine ?? ""}</span>
+              </>
             )}
+            <span className="tool-call__diff-marker">{row.marker}</span>
+            <span className="tool-call__diff-content">
+              {row.segs.map((seg) =>
+                seg.changed ? (
+                  <span key={seg.key} className="tool-call__diff-word">
+                    {seg.text}
+                  </span>
+                ) : (
+                  <span key={seg.key}>{seg.text}</span>
+                ),
+              )}
+            </span>
           </div>
         ))}
       </code>
@@ -239,7 +331,7 @@ function hunkKey(file: PatchFile, hunk: PatchFile["hunks"][number]): string {
   return `${file.path}\0${hunk.header}\0${hunk.lines.length}\0${first}`;
 }
 
-function PatchDiff({ files }: { files: PatchFile[] }) {
+function PatchDiff({ files, cwd = null }: { files: PatchFile[]; cwd?: string | null }) {
   return (
     <div className="tool-call__block tool-call__patch">
       {files.map((file) => (
@@ -248,11 +340,16 @@ function PatchDiff({ files }: { files: PatchFile[] }) {
             <span className={`tool-call__patch-type tool-call__patch-type--${file.op}`}>
               {file.op}
             </span>
-            <span className="tool-call__patch-path">{file.path}</span>
-            {file.movePath && <span className="tool-call__patch-path">→ {file.movePath}</span>}
+            <span className="tool-call__patch-path">{displayPath(file.path, cwd)}</span>
+            {file.movePath && (
+              <span className="tool-call__patch-path">→ {displayPath(file.movePath, cwd)}</span>
+            )}
           </div>
           {file.hunks.map((hunk) => (
-            <DiffLines key={hunkKey(file, hunk)} lines={hunk.lines} />
+            <div key={hunkKey(file, hunk)} className="tool-call__diff-hunk">
+              {hunk.header && <div className="tool-call__diff-hunk-header">@@ {hunk.header}</div>}
+              <DiffLines lines={hunk.lines} />
+            </div>
           ))}
         </div>
       ))}
@@ -364,11 +461,15 @@ export function ToolCallItem({
 
 function ToolCallBody({ tool, popout = false }: { tool: CodexToolCall; popout?: boolean }) {
   const cls = popout ? "tool-call__body tool-call__body--popout" : "tool-call__body";
-  const patchFiles = useMemo(
-    () =>
-      tool.kind === "patch_apply" && tool.input_text ? parseApplyPatch(tool.input_text) : null,
-    [tool.kind, tool.input_text],
-  );
+  const patchFiles = useMemo(() => {
+    if (tool.kind !== "patch_apply") return null;
+    if (tool.input_text) {
+      const parsed = parseApplyPatch(tool.input_text);
+      if (parsed) return parsed;
+    }
+    const files = patchFilesFromChanges(tool);
+    return files.length > 0 ? files : null;
+  }, [tool]);
   return (
     <div className={cls}>
       {tool.kind === "code_mode" && <CodeModeBody tool={tool} />}
@@ -413,26 +514,7 @@ function ToolCallBody({ tool, popout = false }: { tool: CodexToolCall; popout?: 
       {tool.kind === "patch_apply" && patchFiles && (
         <div className="tool-call__section tool-call__section--input">
           <div className="tool-call__section-title">Changes</div>
-          <PatchDiff files={patchFiles} />
-        </div>
-      )}
-
-      {tool.kind === "patch_apply" && !patchFiles && tool.patch_changes && (
-        <div className="tool-call__section tool-call__section--input">
-          <div className="tool-call__section-title">Changes</div>
-          <div className="tool-call__block tool-call__patch">
-            {Object.entries(tool.patch_changes).map(([file, change]) => (
-              <div key={file} className="tool-call__patch-file">
-                <span className={`tool-call__patch-type tool-call__patch-type--${change.type}`}>
-                  {change.type}
-                </span>{" "}
-                {file}
-                {change.unified_diff && (
-                  <pre className="tool-call__block tool-call__diff">{change.unified_diff}</pre>
-                )}
-              </div>
-            ))}
-          </div>
+          <PatchDiff files={patchFiles} cwd={tool.cwd} />
         </div>
       )}
 
@@ -582,5 +664,31 @@ function CodeModeBody({ tool }: { tool: CodexToolCall }) {
         </div>
       )}
     </>
+  );
+}
+
+export function RawExecDetails({ tool }: { tool: CodexToolCall }) {
+  return (
+    <details className="tool-call__raw-details">
+      <summary>Raw exec details</summary>
+      <div className="tool-call__raw-body">
+        {tool.input_text && (
+          <div className="tool-call__section tool-call__section--input">
+            <div className="tool-call__section-title">JavaScript</div>
+            <pre className="tool-call__block tool-call__code">{tool.input_text}</pre>
+          </div>
+        )}
+        {tool.output !== null && (
+          <div className="tool-call__section tool-call__section--output">
+            <div className="tool-call__section-title">Output</div>
+            <pre
+              className={`tool-call__output${tool.exit_code !== null && tool.exit_code !== 0 ? " tool-call__output--error" : ""}`}
+            >
+              {looksLikeJson(tool.output) ? <code>{formatJson(tool.output)}</code> : tool.output}
+            </pre>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }

@@ -1,5 +1,5 @@
 import type { CodexSession } from "../../shared/types";
-import { formatTokens, shortPath, timeAgo } from "../../shared/format";
+import { displayedTokenTotal, formatTokens, shortPath, timeAgo } from "../../shared/format";
 import { shortModel } from "../lib/format";
 import { getModelColor } from "../lib/theme";
 
@@ -10,7 +10,13 @@ interface InfoBarProps {
 export function InfoBar({ session }: InfoBarProps) {
   const cwd = session.cwd ? shortPath(session.cwd) : null;
   const branch = session.git?.branch ?? null;
-  const totalTok = session.total_tokens?.total_tokens ?? 0;
+  const totalTok = session.total_tokens
+    ? displayedTokenTotal(
+        session.total_tokens.input_tokens,
+        session.total_tokens.cached_input_tokens,
+        session.total_tokens.output_tokens,
+      )
+    : 0;
   const lastTurn = session.turns.at(-1);
   const model = lastTurn?.model ?? null;
   const modelClr = model ? getModelColor(model) : undefined;

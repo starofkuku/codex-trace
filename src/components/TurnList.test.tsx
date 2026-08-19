@@ -1,6 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentMessage, CodexToolCall, CodexTurn, TokenInfo } from "../../shared/types";
+import type {
+  AgentMessage,
+  CodexToolCall,
+  CodexTurn,
+  TokenInfo,
+  TokenUsage,
+} from "../../shared/types";
 import { TurnList } from "./TurnList";
 
 const TOKEN_INFO: TokenInfo = {
@@ -12,6 +18,14 @@ const TOKEN_INFO: TokenInfo = {
   context_window_tokens: 150,
   model_context_window: 8000,
   rate_limits: null,
+};
+
+const TURN_TOKEN_USAGE: TokenUsage = {
+  input_tokens: 100,
+  cached_input_tokens: 0,
+  output_tokens: 50,
+  reasoning_output_tokens: 0,
+  total_tokens: 150,
 };
 
 const FINAL_MSG: AgentMessage = {
@@ -60,6 +74,7 @@ function makeTurn(overrides: Partial<CodexTurn> = {}): CodexTurn {
     agent_messages: [FINAL_MSG],
     tool_calls: [],
     final_answer: "Hi there!",
+    turn_tokens: TURN_TOKEN_USAGE,
     total_tokens: TOKEN_INFO,
     model: "gpt-4",
     cwd: null,
@@ -143,6 +158,28 @@ describe("TurnList", () => {
   it("shows duration stat when duration_ms is set", () => {
     render(<TurnList turns={[makeTurn()]} selectedIndex={-1} onSelectTurn={vi.fn()} />);
     expect(screen.getByText("1m")).toBeInTheDocument();
+  });
+
+  it("shows a terminal turn error as the Codex message preview", () => {
+    render(
+      <TurnList
+        turns={[
+          makeTurn({
+            status: "error",
+            error: "exceeded retry limit, last status: 429 Too Many Requests",
+            agent_messages: [],
+            final_answer: null,
+          }),
+        ]}
+        selectedIndex={-1}
+        onSelectTurn={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("exceeded retry limit, last status: 429 Too Many Requests"),
+    ).toHaveClass("message__content--error");
+    expect(screen.getByText("Detail", { selector: "button" })).toBeInTheDocument();
   });
 
   it("calls onSelectTurn with the turn index when Detail button is clicked", () => {

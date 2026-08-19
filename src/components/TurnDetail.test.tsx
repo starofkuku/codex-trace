@@ -1,6 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentMessage, CodexToolCall, CodexTurn, TokenInfo } from "../../shared/types";
+import type {
+  AgentMessage,
+  CodexToolCall,
+  CodexTurn,
+  TokenInfo,
+  TokenUsage,
+} from "../../shared/types";
 import { TurnDetail } from "./TurnDetail";
 
 const TOKEN_INFO: TokenInfo = {
@@ -12,6 +18,14 @@ const TOKEN_INFO: TokenInfo = {
   context_window_tokens: 26_000,
   model_context_window: 100_000,
   rate_limits: null,
+};
+
+const TURN_TOKEN_USAGE: TokenUsage = {
+  input_tokens: 38_000,
+  cached_input_tokens: 12_000,
+  output_tokens: 2_000,
+  reasoning_output_tokens: 500,
+  total_tokens: 40_000,
 };
 
 const FINAL_MSG: AgentMessage = {
@@ -32,6 +46,7 @@ function makeTurn(overrides: Partial<CodexTurn> = {}): CodexTurn {
     agent_messages: [FINAL_MSG],
     tool_calls: [],
     final_answer: "Done",
+    turn_tokens: TURN_TOKEN_USAGE,
     total_tokens: TOKEN_INFO,
     model: "gpt-5.4",
     cwd: null,
@@ -89,9 +104,9 @@ describe("TurnDetail", () => {
     expect(screen.getByText("ctx 84% left")).toBeInTheDocument();
     expect(document.querySelector(".info-bar__context-fill")).toHaveStyle({ width: "16%" });
     expect(screen.getByText("1m")).toBeInTheDocument();
-    expect(screen.getByText("Token usage")).toBeInTheDocument();
-    expect(screen.getByText("total 40.0k")).toBeInTheDocument();
-    expect(screen.getByText("input 38.0k")).toBeInTheDocument();
+    expect(screen.getByText("This turn")).toBeInTheDocument();
+    expect(screen.getByText("total 28.0k")).toBeInTheDocument();
+    expect(screen.getByText("input 26.0k")).toBeInTheDocument();
     expect(screen.getByText("cached 12.0k")).toBeInTheDocument();
     expect(screen.getByText("output 2.0k")).toBeInTheDocument();
     expect(screen.getByText("reasoning 500")).toBeInTheDocument();
@@ -109,7 +124,21 @@ describe("TurnDetail", () => {
 
     expect(screen.queryByText(/ctx .* left/)).not.toBeInTheDocument();
     expect(screen.getByText("1m")).toBeInTheDocument();
-    expect(screen.getByText("total 40.0k")).toBeInTheDocument();
+    expect(screen.getByText("total 28.0k")).toBeInTheDocument();
+  });
+
+  it("shows the original terminal error in turn detail", () => {
+    renderTurnDetail(
+      makeTurn({
+        status: "error",
+        error: "exceeded retry limit, last status: 429 Too Many Requests",
+      }),
+    );
+
+    expect(screen.getByText("Error")).toBeInTheDocument();
+    expect(
+      screen.getByText("exceeded retry limit, last status: 429 Too Many Requests"),
+    ).toBeInTheDocument();
   });
 
   it("renders assistant commentary as an inline Complementary item without duplication", () => {
@@ -176,6 +205,78 @@ describe("TurnDetail", () => {
     expect(iFirst).toBeGreaterThanOrEqual(0);
     expect(iTool).toBeGreaterThan(iFirst);
     expect(iSecond).toBeGreaterThan(iTool);
+  });
+
+  it("replaces a redundant Code Mode wrapper with collapsed raw details", () => {
+    const wrapper = makeTool({
+      call_id: "outer-exec",
+      kind: "code_mode",
+      name: "exec",
+      command: null,
+      input_text: "text(await tools.apply_patch(patch));",
+      output: "{}",
+      nested_tool_calls: [
+        {
+          name: "apply_patch",
+          kind: "patch_apply",
+          arguments: {},
+          input_text: "*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch",
+          command: null,
+          cwd: null,
+          mcp_server: null,
+          mcp_tool: null,
+        },
+      ],
+    });
+    const fileChange = makeTool({
+      call_id: "file-change",
+      kind: "patch_apply",
+      name: "file_change",
+      command: null,
+      exit_code: null,
+      patch_changes: {
+        "src/main.rs": { type: "update", unified_diff: "@@ -1 +1 @@\n-a\n+b" },
+      },
+    });
+    const { container } = render(
+      <TurnDetail
+        turn={makeTurn({
+          agent_messages: [],
+          tool_calls: [fileChange, wrapper],
+          tool_call_orders: [11, 10],
+          final_answer: null,
+        })}
+        expanded={new Set([0])}
+        onToggle={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Raw exec details")).toBeInTheDocument();
+    expect(container.querySelector(".tool-call__raw-details")).not.toHaveAttribute("open");
+    expect(container.querySelectorAll(".tool-call")).toHaveLength(1);
+    expect(screen.getByText("Edited")).toBeInTheDocument();
+  });
+
+  it("keeps Code Mode visible when no structured item represents it", () => {
+    renderTurnDetail(
+      makeTurn({
+        agent_messages: [],
+        tool_calls: [
+          makeTool({
+            kind: "code_mode",
+            name: "exec",
+            command: null,
+            nested_tool_calls: [],
+          }),
+        ],
+        tool_call_orders: [10],
+        final_answer: null,
+      }),
+    );
+
+    expect(screen.getByText("exec")).toBeInTheDocument();
+    expect(screen.queryByText("Raw exec details")).not.toBeInTheDocument();
   });
 
   // Codex v0.146.0 (issue #211): skill catalog budget/truncation notices arrive as

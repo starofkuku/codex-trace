@@ -440,7 +440,23 @@ pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
                             .filter(|v| !v.is_null())
                         {
                             if let Some(ttu) = info.get("total_token_usage") {
-                                total_tokens = ttu.get("total_tokens").and_then(|v| v.as_u64());
+                                let input_tokens = ttu
+                                    .get("input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let cached_input_tokens = ttu
+                                    .get("cached_input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let output_tokens = ttu
+                                    .get("output_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                total_tokens = Some(
+                                    input_tokens
+                                        .saturating_sub(cached_input_tokens)
+                                        .saturating_add(output_tokens),
+                                );
                             }
                         }
                     }
@@ -1007,6 +1023,31 @@ mod tests {
         let session = sessions.iter().find(|s| s.id == "s1").unwrap();
 
         assert_eq!(session.total_tokens, Some(1800));
+    }
+
+    #[test]
+    fn token_count_excludes_cached_input_from_discovered_total() {
+        let tmp = tempdir().unwrap();
+        let day_dir = tmp.path().join("2026/04/30");
+        std::fs::create_dir_all(&day_dir).unwrap();
+        let session_path = day_dir.join("rollout-2026-04-30T10-00-00-cached.jsonl");
+        std::fs::write(
+            &session_path,
+            [
+                r#"{"timestamp":"2026-04-30T10:00:00Z","type":"session_meta","payload":{"id":"cached","timestamp":"2026-04-30T10:00:00Z"}}"#,
+                r#"{"timestamp":"2026-04-30T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+                r#"{"timestamp":"2026-04-30T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":800,"output_tokens":50,"total_tokens":1050}}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let sessions = discover_sessions(tmp.path()).unwrap();
+        let session = sessions
+            .iter()
+            .find(|session| session.id == "cached")
+            .unwrap();
+        assert_eq!(session.total_tokens, Some(250));
     }
 
     // Codex v0.131.0 (PR #22268): collab_agent_spawn_end event renamed new_thread_id → new_session_id.

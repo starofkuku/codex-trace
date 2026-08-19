@@ -30,6 +30,15 @@ export interface TokenInfo {
   rate_limits: RateLimitsInfo | null;
 }
 
+/** Token usage charged to one turn, derived from Codex's cumulative token snapshots. */
+export interface TokenUsage {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+}
+
 export interface AgentMessage {
   text: string;
   phase: "commentary" | "final_answer" | null;
@@ -158,7 +167,10 @@ export interface CodexToolCall {
   /** Codex v0.134.0+ (PR #22882): subagent human-readable name from hook input identity fields. Null for parent-agent calls and pre-v0.134.0 sessions. */
   subagent_name: string | null;
   patch_success: boolean | null;
-  patch_changes: Record<string, { type: string; content?: string; unified_diff?: string }> | null;
+  patch_changes: Record<
+    string,
+    { type: string; content?: string; unified_diff?: string; move_path?: string | null }
+  > | null;
   web_query: string | null;
   web_url: string | null;
   image_prompt: string | null;
@@ -183,6 +195,8 @@ export interface CodexTurn {
    * Same scale as `AgentMessage.order`. Absent for old cached data. */
   tool_call_orders?: number[];
   final_answer: string | null;
+  /** Token usage attributable to this turn alone. Null when the session omits a usable usage record. */
+  turn_tokens?: TokenUsage | null;
   total_tokens: TokenInfo | null;
   model: string | null;
   cwd: string | null;

@@ -4,8 +4,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use super::entry::{parse_timestamp_millis, parse_timestamp_secs, RawEntry};
+use super::redact::redact_secrets;
 use super::spawn::parse_spawn_agent_output;
-use super::toolcall::{ToolCall, ToolCallBuilder};
+use super::toolcall::{ToolCall, ToolCallBuilder, ToolKind};
 
 /// Codex's own sentinel text for a synthetic `agent_message` event it inserts at the end of
 /// the transcript it copies in from an imported Claude/Cursor conversation (pre-v0.140.0
@@ -49,6 +50,43 @@ pub struct TokenInfo {
     pub total_tokens: u64,
     pub context_window_tokens: Option<u64>,
     pub model_context_window: u64,
+}
+
+/// Token usage attributable to one turn. Unlike [`TokenInfo`], this has no context-window
+/// fields because it is calculated from the delta between consecutive cumulative snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+impl TokenUsage {
+    fn from_snapshot(snapshot: &TokenInfo) -> Self {
+        Self {
+            input_tokens: snapshot.input_tokens,
+            cached_input_tokens: snapshot.cached_input_tokens,
+            output_tokens: snapshot.output_tokens,
+            reasoning_output_tokens: snapshot.reasoning_output_tokens,
+            total_tokens: snapshot.total_tokens,
+        }
+    }
+
+    fn checked_delta(current: &TokenInfo, previous: &TokenInfo) -> Option<Self> {
+        Some(Self {
+            input_tokens: current.input_tokens.checked_sub(previous.input_tokens)?,
+            cached_input_tokens: current
+                .cached_input_tokens
+                .checked_sub(previous.cached_input_tokens)?,
+            output_tokens: current.output_tokens.checked_sub(previous.output_tokens)?,
+            reasoning_output_tokens: current
+                .reasoning_output_tokens
+                .checked_sub(previous.reasoning_output_tokens)?,
+            total_tokens: current.total_tokens.checked_sub(previous.total_tokens)?,
+        })
+    }
 }
 
 /// A single memory summary item from a `turn_context` memories payload.
@@ -124,7 +162,15 @@ pub struct CodexTurn {
     #[serde(default)]
     pub tool_call_orders: Vec<usize>,
     pub final_answer: Option<String>,
+    /// Usage consumed by this turn alone. For current Codex logs this is derived from adjacent
+    /// `total_token_usage` snapshots; old `task_complete` records provide it directly.
+    #[serde(default)]
+    pub turn_tokens: Option<TokenUsage>,
     pub total_tokens: Option<TokenInfo>,
+    /// `total_tokens` came from `token_count.total_token_usage`, rather than a per-turn
+    /// `task_complete` fallback. Parser-only state: clients receive `turn_tokens` instead.
+    #[serde(skip)]
+    token_usage_is_cumulative: bool,
     pub model: Option<String>,
     pub cwd: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -171,7 +217,9 @@ impl CodexTurn {
             tool_calls: Vec::new(),
             tool_call_orders: Vec::new(),
             final_answer: None,
+            turn_tokens: None,
             total_tokens: None,
+            token_usage_is_cumulative: false,
             model: None,
             cwd: None,
             reasoning_effort: None,
@@ -296,6 +344,7 @@ impl IncrementalTurnParser {
 
         let mut result: Vec<CodexTurn> = turns.into_values().collect();
         result.sort_by_key(|t| t.started_at.unwrap_or(0));
+        calculate_turn_token_usage(&mut result);
         result
     }
 }
@@ -304,6 +353,40 @@ impl IncrementalTurnParser {
 /// Handles both new format (task_started/task_complete) and old format (user_message-bounded).
 pub fn build_turns(entries: &[RawEntry]) -> Vec<CodexTurn> {
     IncrementalTurnParser::from_entries(entries).snapshot()
+}
+
+/// Populate per-turn usage without attributing a missing-snapshot interval to the next turn.
+/// `total_token_usage` is cumulative for the session, while task_complete token fields are
+/// already per-turn values. If an intervening turn has no cumulative snapshot, the next delta
+/// spans an unknown boundary and must stay unavailable.
+fn calculate_turn_token_usage(turns: &mut [CodexTurn]) {
+    let mut previous_snapshot: Option<TokenInfo> = None;
+    let mut has_snapshot_gap = false;
+
+    for turn in turns {
+        if turn.token_usage_is_cumulative {
+            let Some(snapshot) = turn.total_tokens.as_ref() else {
+                turn.turn_tokens = None;
+                has_snapshot_gap = true;
+                continue;
+            };
+
+            turn.turn_tokens = match previous_snapshot.as_ref() {
+                None if !has_snapshot_gap => Some(TokenUsage::from_snapshot(snapshot)),
+                None => None,
+                Some(previous) if !has_snapshot_gap => {
+                    TokenUsage::checked_delta(snapshot, previous)
+                }
+                Some(_) => None,
+            };
+            previous_snapshot = Some(snapshot.clone());
+            has_snapshot_gap = false;
+        } else {
+            // A task_complete fallback is independently usable, but it cannot bridge a gap in
+            // the cumulative series that surrounds it.
+            has_snapshot_gap = true;
+        }
+    }
 }
 
 /// Extract a tool call's `call_id` from a raw entry, checking both the parsed payload and the
@@ -479,6 +562,17 @@ fn handle_event_msg(
                 .to_string();
             if let Some(turn) = turns.get_mut(&turn_id) {
                 turn.status = TurnStatus::Complete;
+                if let Some(error) = payload.get("error").filter(|value| !value.is_null()) {
+                    let message = error
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| error.as_str())
+                        .filter(|message| !message.is_empty());
+                    if let Some(message) = message {
+                        turn.status = TurnStatus::Error;
+                        turn.error = Some(message.to_string());
+                    }
+                }
                 // Prefer task_complete.last_agent_message as final_answer
                 if let Some(last_msg) = payload
                     .get("last_agent_message")
@@ -504,7 +598,7 @@ fn handle_event_msg(
                         .and_then(|v| v.as_u64())
                         .or_else(|| prompt_tokens.zip(completion_tokens).map(|(p, c)| p + c));
                     if let Some(total_tokens) = total {
-                        turn.total_tokens = Some(TokenInfo {
+                        let token_info = TokenInfo {
                             input_tokens: prompt_tokens.unwrap_or(0),
                             cached_input_tokens: 0,
                             output_tokens: completion_tokens.unwrap_or(0),
@@ -512,7 +606,10 @@ fn handle_event_msg(
                             total_tokens,
                             context_window_tokens: None,
                             model_context_window: 0,
-                        });
+                        };
+                        turn.turn_tokens = Some(TokenUsage::from_snapshot(&token_info));
+                        turn.total_tokens = Some(token_info);
+                        turn.token_usage_is_cumulative = false;
                     }
                 }
             }
@@ -618,6 +715,8 @@ fn handle_event_msg(
                                 context_window_tokens,
                                 model_context_window: u64_field(info, "model_context_window"),
                             });
+                            turn.turn_tokens = None;
+                            turn.token_usage_is_cumulative = true;
                         }
                     }
                 }
@@ -892,8 +991,179 @@ fn handle_item_completed(
                 append_agent_message(turn, text, None, timestamp, true, index);
             }
         }
+        "CommandExecution" => {
+            turn.tool_calls.push(command_execution_tool(item));
+            turn.tool_call_orders.push(index);
+        }
+        "FileChange" => {
+            turn.tool_calls
+                .push(file_change_tool(payload, item, turn.cwd.as_deref()));
+            turn.tool_call_orders.push(index);
+        }
         _ => {}
     }
+}
+
+fn command_execution_tool(item: &serde_json::Map<String, Value>) -> ToolCall {
+    let command = item
+        .get("command")
+        .and_then(|value| value.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.as_str())
+                .map(redact_secrets)
+                .collect::<Vec<_>>()
+        });
+    let cwd = item
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .map(|value| value.strip_prefix("file://").unwrap_or(value).to_string());
+    let output = first_non_empty_string(item, &["formatted_output", "aggregated_output", "stdout"]);
+    let mut arguments = serde_json::Map::new();
+    if let Some(commands) = item.get("parsed_cmd").and_then(|value| value.as_array()) {
+        let commands = commands
+            .iter()
+            .map(|command| {
+                let mut command = command.clone();
+                if let Some(command_text) = command.get_mut("cmd") {
+                    if let Some(text) = command_text.as_str() {
+                        *command_text = Value::String(redact_secrets(text));
+                    }
+                }
+                command
+            })
+            .collect();
+        arguments.insert("parsed_cmd".to_string(), Value::Array(commands));
+    }
+    for key in ["source", "process_id"] {
+        if let Some(value) = item.get(key) {
+            arguments.insert(key.to_string(), value.clone());
+        }
+    }
+
+    ToolCall {
+        call_id: string_value(item, "id"),
+        kind: ToolKind::ExecCommand,
+        name: "command_execution".to_string(),
+        arguments: Value::Object(arguments),
+        input_text: None,
+        nested_tool_calls: Vec::new(),
+        output,
+        exit_code: item
+            .get("exit_code")
+            .and_then(|value| value.as_i64())
+            .and_then(|value| i32::try_from(value).ok()),
+        command,
+        cwd,
+        duration_secs: duration_value(item.get("duration")),
+        mcp_server: None,
+        mcp_tool: None,
+        plugin_id: None,
+        script_path: None,
+        patch_success: None,
+        patch_changes: None,
+        web_query: None,
+        web_url: None,
+        image_prompt: None,
+        image_file_path: None,
+        worker_session: None,
+        status: string_value(item, "status"),
+        subagent_id: None,
+        subagent_name: None,
+        output_truncated: None,
+    }
+}
+
+fn file_change_tool(
+    payload: &Value,
+    item: &serde_json::Map<String, Value>,
+    turn_cwd: Option<&str>,
+) -> ToolCall {
+    let started_at_ms = payload
+        .get("started_at_ms")
+        .and_then(|value| value.as_u64());
+    let completed_at_ms = payload
+        .get("completed_at_ms")
+        .and_then(|value| value.as_u64());
+    let duration_secs = started_at_ms
+        .zip(completed_at_ms)
+        .and_then(|(started, completed)| completed.checked_sub(started))
+        .map(|millis| millis as f64 / 1000.0);
+    let status = string_value(item, "status");
+    let output = joined_output(item);
+
+    ToolCall {
+        call_id: string_value(item, "id"),
+        kind: ToolKind::PatchApply,
+        name: "file_change".to_string(),
+        arguments: Value::Object(serde_json::Map::new()),
+        input_text: None,
+        nested_tool_calls: Vec::new(),
+        output,
+        exit_code: None,
+        command: None,
+        cwd: turn_cwd.map(|value| value.to_string()),
+        duration_secs,
+        mcp_server: None,
+        mcp_tool: None,
+        plugin_id: None,
+        script_path: None,
+        patch_success: Some(status == "completed"),
+        patch_changes: item.get("changes").cloned(),
+        web_query: None,
+        web_url: None,
+        image_prompt: None,
+        image_file_path: None,
+        worker_session: None,
+        status,
+        subagent_id: None,
+        subagent_name: None,
+        output_truncated: None,
+    }
+}
+
+fn string_value(item: &serde_json::Map<String, Value>, key: &str) -> String {
+    item.get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn first_non_empty_string(item: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        item.get(*key)
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+    })
+}
+
+fn joined_output(item: &serde_json::Map<String, Value>) -> Option<String> {
+    let stdout = item
+        .get("stdout")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let stderr = item
+        .get("stderr")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(stdout.to_string()),
+        (true, false) => Some(stderr.to_string()),
+        (false, false) => Some(format!("{stdout}{stderr}")),
+    }
+}
+
+fn duration_value(duration: Option<&Value>) -> Option<f64> {
+    let duration = duration?;
+    let secs = duration.get("secs")?.as_f64()?;
+    let nanos = duration
+        .get("nanos")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0);
+    Some(secs + nanos / 1_000_000_000.0)
 }
 
 fn append_agent_message(
@@ -1691,6 +1961,44 @@ mod tests {
     }
 
     #[test]
+    fn current_item_completed_structured_tools_preserve_cli_fields() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-08-17T10:00:00Z","type":"session_meta","payload":{"id":"structured-tools","timestamp":"2026-08-17T10:00:00Z"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:01Z","type":"turn_context","payload":{"model":"gpt-5","cwd":"/work/project"}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"CommandExecution","id":"exec-1","command":["/usr/bin/bash","-lc","rg parser src"],"cwd":"file:///work/project","parsed_cmd":[{"type":"search","cmd":"rg parser src"}],"source":"unified_exec_startup","status":"completed","formatted_output":"src/parser.rs\n","exit_code":0,"duration":{"secs":0,"nanos":85000000}}}}"#,
+            r#"{"timestamp":"2026-08-17T10:00:03Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","started_at_ms":1786960802800,"completed_at_ms":1786960803051,"item":{"type":"FileChange","id":"patch-1","changes":{"/work/project/src/main.rs":{"type":"update","unified_diff":"@@ -1 +1 @@\n-old\n+new","move_path":null}},"status":"completed","stdout":"Success. Updated src/main.rs\n","stderr":""}}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+        let turn = &turns[0];
+        assert_eq!(turn.tool_calls.len(), 2);
+        assert_eq!(turn.tool_call_orders.len(), 2);
+
+        let command = &turn.tool_calls[0];
+        assert_eq!(command.kind, ToolKind::ExecCommand);
+        assert_eq!(command.name, "command_execution");
+        assert_eq!(command.command.as_deref().unwrap()[2], "rg parser src");
+        assert_eq!(command.cwd.as_deref(), Some("/work/project"));
+        assert_eq!(command.output.as_deref(), Some("src/parser.rs\n"));
+        assert_eq!(command.exit_code, Some(0));
+        assert_eq!(command.duration_secs, Some(0.085));
+        assert_eq!(command.arguments["parsed_cmd"][0]["type"], "search");
+
+        let patch = &turn.tool_calls[1];
+        assert_eq!(patch.kind, ToolKind::PatchApply);
+        assert_eq!(patch.name, "file_change");
+        assert_eq!(patch.cwd.as_deref(), Some("/work/project"));
+        assert_eq!(patch.patch_success, Some(true));
+        assert_eq!(patch.duration_secs, Some(0.251));
+        assert_eq!(
+            patch.patch_changes.as_ref().unwrap()["/work/project/src/main.rs"]["type"],
+            "update"
+        );
+        assert!(turn.tool_call_orders[0] < turn.tool_call_orders[1]);
+    }
+
+    #[test]
     fn current_custom_tool_call_duration_uses_event_timestamps() {
         let entries = entries(&[
             r#"{"timestamp":"2026-08-17T10:00:00.000Z","type":"session_meta","payload":{"id":"current-custom-tool","timestamp":"2026-08-17T10:00:00.000Z"}}"#,
@@ -1779,6 +2087,74 @@ mod tests {
         assert_eq!(tokens.total_tokens, 40000);
         assert_eq!(tokens.context_window_tokens, Some(26000));
         assert_eq!(tokens.model_context_window, 100000);
+        assert_eq!(
+            turns[0].turn_tokens,
+            Some(TokenUsage {
+                input_tokens: 38000,
+                cached_input_tokens: 12000,
+                output_tokens: 2000,
+                reasoning_output_tokens: 500,
+                total_tokens: 40000,
+            })
+        );
+    }
+
+    #[test]
+    fn calculates_turn_usage_from_cumulative_token_snapshots() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-04-27T04:52:00Z","type":"session_meta","payload":{"id":"token-session","timestamp":"2026-04-27T04:52:00Z"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":60,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110},"last_token_usage":{"total_tokens":110},"model_context_window":100000}}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:04Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":40,"reasoning_output_tokens":8,"total_tokens":340},"last_token_usage":{"total_tokens":240},"model_context_window":100000}}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:06Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-2"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:07Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-3"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:08Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-3"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:09Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-4"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":450,"cached_input_tokens":290,"output_tokens":55,"reasoning_output_tokens":12,"total_tokens":505},"last_token_usage":{"total_tokens":215},"model_context_window":100000}}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+        assert_eq!(turns.len(), 4);
+        assert_eq!(
+            turns[0].turn_tokens,
+            Some(TokenUsage {
+                input_tokens: 100,
+                cached_input_tokens: 60,
+                output_tokens: 10,
+                reasoning_output_tokens: 4,
+                total_tokens: 110,
+            })
+        );
+        assert_eq!(
+            turns[1].turn_tokens,
+            Some(TokenUsage {
+                input_tokens: 200,
+                cached_input_tokens: 140,
+                output_tokens: 30,
+                reasoning_output_tokens: 4,
+                total_tokens: 230,
+            })
+        );
+        assert_eq!(turns[2].turn_tokens, None);
+        assert_eq!(turns[3].turn_tokens, None);
+    }
+
+    #[test]
+    fn does_not_assign_the_first_snapshot_after_a_missing_turn() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-04-27T04:52:00Z","type":"session_meta","payload":{"id":"token-gap-session","timestamp":"2026-04-27T04:52:00Z"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:02Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:03Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}"#,
+            r#"{"timestamp":"2026-04-27T04:52:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":60,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110},"last_token_usage":{"total_tokens":110},"model_context_window":100000}}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].turn_tokens, None);
+        assert_eq!(turns[1].turn_tokens, None);
     }
 
     #[test]
@@ -2141,6 +2517,34 @@ mod tests {
         assert_eq!(tokens.total_tokens, 1800);
         assert_eq!(tokens.cached_input_tokens, 0);
         assert_eq!(tokens.context_window_tokens, None);
+        assert_eq!(
+            turns[0].turn_tokens,
+            Some(TokenUsage {
+                input_tokens: 1500,
+                cached_input_tokens: 0,
+                output_tokens: 300,
+                reasoning_output_tokens: 0,
+                total_tokens: 1800,
+            })
+        );
+    }
+
+    #[test]
+    fn task_complete_error_is_preserved_and_marks_turn_failed() {
+        let entries = entries(&[
+            r#"{"timestamp":"2026-08-18T13:28:14Z","type":"session_meta","payload":{"id":"rate-limit-session","timestamp":"2026-08-18T13:28:14Z"}}"#,
+            r#"{"timestamp":"2026-08-18T13:28:15Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"timestamp":"2026-08-18T13:33:36Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":null,"error":{"message":"exceeded retry limit, last status: 429 Too Many Requests","codex_error_info":{"response_too_many_failed_attempts":{"http_status_code":429}}},"completed_at":1787060016,"duration_ms":290619}}"#,
+        ]);
+
+        let turns = build_turns(&entries);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].status, TurnStatus::Error);
+        assert_eq!(
+            turns[0].error.as_deref(),
+            Some("exceeded retry limit, last status: 429 Too Many Requests")
+        );
+        assert_eq!(turns[0].duration_ms, Some(290619));
     }
 
     #[test]

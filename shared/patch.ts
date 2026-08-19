@@ -39,6 +39,30 @@ const ADD = "*** Add File: ";
 const UPDATE = "*** Update File: ";
 const DELETE = "*** Delete File: ";
 const MOVE = "*** Move to: ";
+const UNIFIED_HUNK_RE = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/;
+
+function hunkStarts(header: string): { oldStart: number; newStart: number } | null {
+  const match = `@@ ${header}`.match(UNIFIED_HUNK_RE);
+  if (!match) return null;
+  return { oldStart: Number(match[1]), newStart: Number(match[2]) };
+}
+
+function numberLines(lines: DiffLine[], header: string): DiffLine[] {
+  const starts = hunkStarts(header);
+  if (!starts) return lines;
+
+  let oldLine = starts.oldStart;
+  let newLine = starts.newStart;
+  return lines.map((line) => {
+    if (line.kind === "context") {
+      return { ...line, oldLine: oldLine++, newLine: newLine++ };
+    }
+    if (line.kind === "removed") {
+      return { ...line, oldLine: oldLine++, newLine: null };
+    }
+    return { ...line, oldLine: null, newLine: newLine++ };
+  });
+}
 
 function looksLikePatch(patch: string): boolean {
   return (
@@ -63,7 +87,8 @@ export function parseApplyPatch(patch: string): PatchFile[] | null {
 
   const endHunk = () => {
     if (file && hunkOps.length > 0) {
-      file.hunks.push({ header: hunkHeader, lines: segmentize(groupRuns(hunkOps)) });
+      const diffLines = segmentize(groupRuns(hunkOps));
+      file.hunks.push({ header: hunkHeader, lines: numberLines(diffLines, hunkHeader) });
     }
     hunkOps = [];
     hunkHeader = "";
@@ -111,4 +136,34 @@ export function parseApplyPatch(patch: string): PatchFile[] | null {
   endFile();
 
   return files.length > 0 ? files : null;
+}
+
+/** Parse the hunk body stored by current Codex `FileChange.unified_diff` events. */
+export function parseUnifiedDiff(diff: string): PatchHunk[] {
+  const hunks: PatchHunk[] = [];
+  let header = "";
+  let ops: LineOp[] = [];
+  let inHunk = false;
+
+  const finishHunk = () => {
+    if (!inHunk) return;
+    const lines = segmentize(groupRuns(ops));
+    hunks.push({ header, lines: numberLines(lines, header) });
+    ops = [];
+  };
+
+  for (const raw of diff.split("\n")) {
+    if (raw.startsWith("@@")) {
+      finishHunk();
+      header = raw.slice(2).trim();
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk || raw === "\\ No newline at end of file") continue;
+    if (raw.startsWith("+")) ops.push({ kind: "added", text: raw.slice(1) });
+    else if (raw.startsWith("-")) ops.push({ kind: "removed", text: raw.slice(1) });
+    else if (raw.startsWith(" ")) ops.push({ kind: "context", text: raw.slice(1) });
+  }
+  finishHunk();
+  return hunks;
 }

@@ -23,6 +23,9 @@ export interface DiffLine {
   kind: DiffLineKind;
   /** Concatenating `segments[].text` reproduces the full line. */
   segments: DiffSegment[];
+  /** Source and destination line numbers when a unified-diff hunk provides them. */
+  oldLine?: number | null;
+  newLine?: number | null;
 }
 
 /** A line classified as context/removed/added, before word-level segmenting. */
