@@ -1,9 +1,15 @@
 import type { CodexSessionInfo } from "../../shared/types";
 
 export type SessionFilter = "all" | "active" | "recent";
+export type SessionSortOrder = "newest" | "oldest";
 
 /** Number of sessions shown by the Recent picker filter. */
 export const RECENT_SESSION_LIMIT = 10;
+
+/** Worker rollouts are inspected through their parent turn, not as standalone sessions. */
+export function isPrimarySession(session: CodexSessionInfo): boolean {
+  return !session.is_external_worker && !session.is_inline_worker;
+}
 
 function sessionTimestamp(session: CodexSessionInfo): number | null {
   const timestamp = Date.parse(session.last_activity_time);
@@ -11,12 +17,15 @@ function sessionTimestamp(session: CodexSessionInfo): number | null {
 }
 
 /** Sort sessions by their latest valid rollout entry, preserving input order for ties. */
-export function sortSessionsByActivity(sessions: CodexSessionInfo[]): CodexSessionInfo[] {
+export function sortSessionsByActivity(
+  sessions: CodexSessionInfo[],
+  order: SessionSortOrder = "newest",
+): CodexSessionInfo[] {
   return sessions
     .map((session, index) => ({ session, index, timestamp: sessionTimestamp(session) }))
     .toSorted((a, b) => {
       if (a.timestamp !== null && b.timestamp !== null && a.timestamp !== b.timestamp) {
-        return b.timestamp - a.timestamp;
+        return order === "newest" ? b.timestamp - a.timestamp : a.timestamp - b.timestamp;
       }
       if (a.timestamp !== null && b.timestamp === null) return -1;
       if (a.timestamp === null && b.timestamp !== null) return 1;

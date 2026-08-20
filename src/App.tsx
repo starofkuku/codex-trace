@@ -16,7 +16,14 @@ import { ResizeHandle } from "./components/ResizeHandle";
 import { SidebarToggle } from "./components/SidebarToggle";
 import { SettingsModal } from "./components/SettingsModal";
 import { SessionGroupToggle } from "./components/SessionGroupToggle";
-import { flattenSessionGroups, groupSessions, type SessionGroupMode } from "./lib/sessionGrouping";
+import { SidebarDirectoryActions } from "./components/SidebarDirectoryActions";
+import {
+  flattenSessionGroups,
+  groupSessions,
+  type SessionGroupMode,
+  type SessionSortOrder,
+} from "./lib/sessionGrouping";
+import { isPrimarySession } from "./lib/sessionFilter";
 
 const DEFAULT_SIDEBAR_WIDTH = 260;
 const COLLAPSED_SIDEBAR_WIDTH = 36;
@@ -42,6 +49,7 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [sessionGroupMode, setSessionGroupMode] = useState<SessionGroupMode>("directory");
+  const [sidebarSortOrder, setSidebarSortOrder] = useState<SessionSortOrder>("newest");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [workerPanelWidth, setWorkerPanelWidth] = useState(380);
   const [workerPanelCallId, setWorkerPanelCallId] = useState<string | null>(null);
@@ -118,6 +126,21 @@ export function App() {
   const handleGroupModeChange = useCallback((mode: SessionGroupMode) => {
     setSessionGroupMode(mode);
     setPickerSelected(0);
+  }, []);
+
+  const sidebarDirectoryGroups = useMemo(
+    () => groupSessions(picker.allSessions.filter(isPrimarySession), "directory", sidebarSortOrder),
+    [picker.allSessions, sidebarSortOrder],
+  );
+
+  const expandAllDirectories = useCallback(() => setCollapsedGroups(new Set()), []);
+
+  const collapseAllDirectories = useCallback(() => {
+    setCollapsedGroups(new Set(sidebarDirectoryGroups.map((group) => group.key)));
+  }, [sidebarDirectoryGroups]);
+
+  const toggleSidebarSortOrder = useCallback(() => {
+    setSidebarSortOrder((order) => (order === "newest" ? "oldest" : "newest"));
   }, []);
 
   const pickerNavigationSessions = useMemo(
@@ -231,6 +254,14 @@ export function App() {
           <div className="app__sidebar-header">
             <span className="app__sidebar-title">SESSIONS</span>
             <div className="app__sidebar-actions">
+              {!sidebarCollapsed && sessionGroupMode === "directory" && (
+                <SidebarDirectoryActions
+                  sortOrder={sidebarSortOrder}
+                  onExpandAll={expandAllDirectories}
+                  onCollapseAll={collapseAllDirectories}
+                  onToggleSort={toggleSidebarSortOrder}
+                />
+              )}
               {!sidebarCollapsed && (
                 <SessionGroupToggle
                   mode={sessionGroupMode}
@@ -246,6 +277,7 @@ export function App() {
               sessions={picker.allSessions}
               selectedPath={session.sessionPath || null}
               groupMode={sessionGroupMode}
+              sortOrder={sessionGroupMode === "directory" ? sidebarSortOrder : "newest"}
               collapsedDates={collapsedGroups}
               onSelectSession={handleSelectSession}
               onToggleDate={handleToggleGroup}

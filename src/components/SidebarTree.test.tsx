@@ -249,12 +249,19 @@ describe("SidebarTree", () => {
     ).toEqual(["Resumed old session", "New session", "Yesterday"]);
   });
 
-  it("hides inline workers from the top-level list", () => {
-    const worker = makeSession({
+  it("shows only primary sessions when linked and unlinked workers are present", () => {
+    const linkedWorker = makeSession({
       id: "worker1",
-      path: "/sessions/2026/04/26/rollout-worker.jsonl",
-      thread_name: "Worker Session",
+      path: "/sessions/2026/04/26/rollout-linked-worker.jsonl",
+      thread_name: "Linked Worker",
+      is_external_worker: true,
       is_inline_worker: true,
+    });
+    const unlinkedWorker = makeSession({
+      id: "worker2",
+      path: "/sessions/2026/04/26/rollout-unlinked-worker.jsonl",
+      thread_name: "Unlinked Worker",
+      is_external_worker: true,
     });
     const parent = makeSession({
       id: "parent1",
@@ -264,7 +271,7 @@ describe("SidebarTree", () => {
     });
     render(
       <SidebarTree
-        sessions={[parent, worker]}
+        sessions={[parent, linkedWorker, unlinkedWorker]}
         selectedPath={null}
         collapsedDates={new Set()}
         onSelectSession={vi.fn()}
@@ -272,51 +279,30 @@ describe("SidebarTree", () => {
       />,
     );
     expect(screen.getByText("Parent Session")).toBeInTheDocument();
+    expect(screen.queryByText("Linked Worker")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unlinked Worker")).not.toBeInTheDocument();
+    expect(screen.queryByText(/workers/)).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state when only worker sessions exist", () => {
+    render(
+      <SidebarTree
+        sessions={[
+          makeSession({
+            id: "worker1",
+            path: "/sessions/2026/04/26/rollout-worker.jsonl",
+            thread_name: "Worker Session",
+            is_external_worker: true,
+          }),
+        ]}
+        selectedPath={null}
+        collapsedDates={new Set()}
+        onSelectSession={vi.fn()}
+        onToggleDate={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("No sessions")).toBeInTheDocument();
     expect(screen.queryByText("Worker Session")).not.toBeInTheDocument();
-  });
-
-  it("shows inline workers nested under parent when toggle is clicked", () => {
-    const worker = makeSession({
-      id: "worker1",
-      path: "/sessions/2026/04/26/rollout-worker.jsonl",
-      thread_name: "Parent Session",
-      is_inline_worker: true,
-      worker_nickname: "Parfit",
-    });
-    const parent = makeSession({
-      id: "parent1",
-      path: "/sessions/2026/04/26/rollout-parent.jsonl",
-      thread_name: "Parent Session",
-      spawned_worker_ids: ["worker1"],
-    });
-    render(
-      <SidebarTree
-        sessions={[parent, worker]}
-        selectedPath={null}
-        collapsedDates={new Set()}
-        onSelectSession={vi.fn()}
-        onToggleDate={vi.fn()}
-      />,
-    );
-    fireEvent.click(screen.getByText(/1 workers/));
-    expect(screen.getByText("Parfit (worker1)")).toBeInTheDocument();
-    expect(
-      screen.getByText("Parfit (worker1)").closest(".sidebar-tree__session--child"),
-    ).toBeTruthy();
-    expect(screen.queryAllByText("Parent Session")).toHaveLength(1);
-  });
-
-  it("shows worker badge on external worker sessions", () => {
-    render(
-      <SidebarTree
-        sessions={[makeSession({ is_external_worker: true, thread_name: "Review Session" })]}
-        selectedPath={null}
-        collapsedDates={new Set()}
-        onSelectSession={vi.fn()}
-        onToggleDate={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("worker")).toBeInTheDocument();
   });
 
   it("groups sessions by directory when requested", () => {
@@ -347,5 +333,54 @@ describe("SidebarTree", () => {
       "title",
       "/workspace/project-b",
     );
+  });
+
+  it("sorts directories and their sessions by oldest activity", () => {
+    const { container } = render(
+      <SidebarTree
+        sessions={[
+          makeSession({
+            id: "a-newer",
+            path: "/a-newer.jsonl",
+            cwd: "/workspace/project-a",
+            thread_name: "A newer",
+            last_activity_time: "2026-08-20T10:00:00Z",
+          }),
+          makeSession({
+            id: "project-b",
+            path: "/project-b.jsonl",
+            cwd: "/workspace/project-b",
+            thread_name: "Project B",
+            last_activity_time: "2026-08-20T11:00:00Z",
+          }),
+          makeSession({
+            id: "a-older",
+            path: "/a-older.jsonl",
+            cwd: "/workspace/project-a",
+            thread_name: "A older",
+            last_activity_time: "2026-08-20T09:00:00Z",
+          }),
+        ]}
+        selectedPath={null}
+        groupMode="directory"
+        sortOrder="oldest"
+        collapsedDates={new Set()}
+        onSelectSession={vi.fn()}
+        onToggleDate={vi.fn()}
+      />,
+    );
+
+    expect(
+      Array.from(
+        container.querySelectorAll(".sidebar-tree__group-label"),
+        (node) => node.textContent,
+      ),
+    ).toEqual(["project-a", "project-b"]);
+    expect(
+      Array.from(
+        container.querySelectorAll(".sidebar-tree__session-label"),
+        (node) => node.textContent,
+      ),
+    ).toEqual(["A older", "A newer", "Project B"]);
   });
 });

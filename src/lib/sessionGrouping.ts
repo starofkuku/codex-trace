@@ -1,6 +1,12 @@
 import type { CodexSessionInfo } from "../../shared/types";
 import { shortPath } from "../../shared/format";
-import { sessionActivityDateGroup, sortSessionsByActivity } from "./sessionFilter";
+import {
+  sessionActivityDateGroup,
+  sortSessionsByActivity,
+  type SessionSortOrder,
+} from "./sessionFilter";
+
+export type { SessionSortOrder } from "./sessionFilter";
 
 export type SessionGroupMode = "directory" | "date";
 
@@ -14,10 +20,11 @@ export interface SessionGroup {
 export function groupSessions(
   sessions: CodexSessionInfo[],
   mode: SessionGroupMode,
+  sortOrder: SessionSortOrder = "newest",
 ): SessionGroup[] {
   const groups = new Map<string, SessionGroup>();
 
-  for (const session of sortSessionsByActivity(sessions)) {
+  for (const session of sortSessionsByActivity(sessions, sortOrder)) {
     const directory = session.cwd?.trim();
     const key =
       mode === "directory"

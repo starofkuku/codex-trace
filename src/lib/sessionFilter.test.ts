@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { CodexSessionInfo } from "../../shared/types";
-import { filterSessions, RECENT_SESSION_LIMIT, sessionActivityDateGroup } from "./sessionFilter";
+import {
+  filterSessions,
+  isPrimarySession,
+  RECENT_SESSION_LIMIT,
+  sessionActivityDateGroup,
+} from "./sessionFilter";
 
 function makeSession(
   id: string,
@@ -114,5 +119,23 @@ describe("filterSessions", () => {
         date_group: "2026/01/01",
       }),
     ).toBe("2026/01/01");
+  });
+});
+
+describe("isPrimarySession", () => {
+  it("excludes both linked and unlinked worker rollouts", () => {
+    expect(isPrimarySession(makeSession("primary", "2026-08-20T12:00:00Z"))).toBe(true);
+    expect(
+      isPrimarySession({
+        ...makeSession("external-worker", "2026-08-20T12:00:00Z"),
+        is_external_worker: true,
+      }),
+    ).toBe(false);
+    expect(
+      isPrimarySession({
+        ...makeSession("inline-worker", "2026-08-20T12:00:00Z"),
+        is_inline_worker: true,
+      }),
+    ).toBe(false);
   });
 });

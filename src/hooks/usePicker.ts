@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../lib/invoke";
 import type { CodexSessionInfo, SessionActivityUpdate, SettingsResponse } from "../../shared/types";
-import { filterSessions, type SessionFilter } from "../lib/sessionFilter";
+import { filterSessions, isPrimarySession, type SessionFilter } from "../lib/sessionFilter";
 import { sessionDisplayName } from "../lib/sessionDisplay";
 import { useTauriEvent } from "./useTauriEvent";
 
@@ -114,7 +114,10 @@ export function usePicker() {
     };
   }, []);
 
-  const visibleSessions = filterSessions(state.sessions, state.sessionFilter);
+  const visibleSessions = filterSessions(
+    state.sessions.filter(isPrimarySession),
+    state.sessionFilter,
+  );
   const filteredSessions = state.searchQuery
     ? visibleSessions.filter(
         (s) =>
