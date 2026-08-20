@@ -4,6 +4,7 @@ import { formatFileSize, timeAgo } from "../../shared/format";
 import { copyText } from "../lib/copyText";
 import { sessionDisplayName } from "../lib/sessionDisplay";
 import { isPrimarySession } from "../lib/sessionFilter";
+import { sessionRelativePath } from "../lib/sessionPath";
 import {
   groupSessions,
   type SessionGroupMode,
@@ -11,7 +12,7 @@ import {
 } from "../lib/sessionGrouping";
 import { OngoingDots } from "./OngoingDots";
 import { SubagentMarker } from "./SubagentMarker";
-import { VscCheck, VscCopy } from "react-icons/vsc";
+import { VscCheck, VscCopy, VscFile } from "react-icons/vsc";
 
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 
@@ -40,7 +41,7 @@ export function SidebarTree({
   onToggleSessionSelection,
   onToggleDate,
 }: SidebarTreeProps) {
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
   const primarySessions = useMemo(() => sessions.filter(isPrimarySession), [sessions]);
   const grouped = useMemo(
     () => groupSessions(primarySessions, groupMode, sortOrder),
@@ -55,16 +56,19 @@ export function SidebarTree({
     [onToggleDate],
   );
 
-  const handleCopyId = useCallback(async (session: CodexSessionInfo) => {
+  const handleCopy = useCallback(async (session: CodexSessionInfo, target: "id" | "path") => {
+    const copyKey = `${session.path}:${target}`;
+    const value =
+      target === "id" ? session.id : sessionRelativePath(session.path, session.date_group);
     try {
-      await copyText(session.id);
-      setCopiedId(session.id);
+      await copyText(value);
+      setCopiedTarget(copyKey);
       window.setTimeout(
-        () => setCopiedId((current) => (current === session.id ? null : current)),
+        () => setCopiedTarget((current) => (current === copyKey ? null : current)),
         1500,
       );
     } catch {
-      setCopiedId(null);
+      setCopiedTarget(null);
     }
   }, []);
 
@@ -143,19 +147,50 @@ export function SidebarTree({
                       </span>
                       <span className="sidebar-tree__time">{timeAgo(s.last_activity_time)}</span>
                       {!selectionMode && (
-                        <button
-                          type="button"
-                          className={`sidebar-tree__copy-button${copiedId === s.id ? " sidebar-tree__copy-button--copied" : ""}`}
-                          aria-label={copiedId === s.id ? "Copied session ID" : "Copy session ID"}
-                          title={copiedId === s.id ? "Copied session ID" : "Copy session ID"}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleCopyId(s);
-                          }}
-                          onKeyDown={(e) => e.stopPropagation()}
-                        >
-                          {copiedId === s.id ? <VscCheck /> : <VscCopy />}
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            className={`sidebar-tree__copy-button${copiedTarget === `${s.path}:id` ? " sidebar-tree__copy-button--copied" : ""}`}
+                            aria-label={
+                              copiedTarget === `${s.path}:id`
+                                ? "Copied session ID"
+                                : "Copy session ID"
+                            }
+                            title={
+                              copiedTarget === `${s.path}:id`
+                                ? "Copied session ID"
+                                : "Copy session ID"
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleCopy(s, "id");
+                            }}
+                            onKeyDown={(e) => e.stopPropagation()}
+                          >
+                            {copiedTarget === `${s.path}:id` ? <VscCheck /> : <VscCopy />}
+                          </button>
+                          <button
+                            type="button"
+                            className={`sidebar-tree__copy-button${copiedTarget === `${s.path}:path` ? " sidebar-tree__copy-button--copied" : ""}`}
+                            aria-label={
+                              copiedTarget === `${s.path}:path`
+                                ? "Copied session path"
+                                : "Copy session path"
+                            }
+                            title={
+                              copiedTarget === `${s.path}:path`
+                                ? "Copied session path"
+                                : "Copy session path"
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleCopy(s, "path");
+                            }}
+                            onKeyDown={(e) => e.stopPropagation()}
+                          >
+                            {copiedTarget === `${s.path}:path` ? <VscCheck /> : <VscFile />}
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>

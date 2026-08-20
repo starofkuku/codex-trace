@@ -156,6 +156,33 @@ describe("SidebarTree", () => {
     expect(screen.getByRole("button", { name: "Copied session ID" })).toBeInTheDocument();
   });
 
+  it("copies the session path relative to the sessions directory", async () => {
+    const onSelect = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const session = makeSession({
+      path: "/home/user/.codex/sessions/2026/04/26/rollout-abc.jsonl",
+    });
+    render(
+      <SidebarTree
+        sessions={[session]}
+        selectedPath={null}
+        collapsedDates={new Set()}
+        onSelectSession={onSelect}
+        onToggleDate={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy session path" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("2026/04/26/rollout-abc.jsonl"));
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Copied session path" })).toBeInTheDocument();
+  });
+
   it("shows checkboxes and toggles sessions without opening them in selection mode", () => {
     const onSelect = vi.fn();
     const onToggleSelection = vi.fn();
