@@ -372,6 +372,8 @@ export interface SessionActivityUpdate {
 export interface SettingsResponse {
   sessions_dir: string | null;
   default_dir: string;
+  /** Missing only when a newer frontend is talking to an older backend. */
+  backend_version?: string;
 }
 
 export type ViewState = "picker" | "list" | "detail";

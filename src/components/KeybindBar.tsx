@@ -1,4 +1,5 @@
 import type { ViewState } from "../../shared/types";
+import { FRONTEND_VERSION } from "../lib/version";
 
 interface KeybindBarProps {
   view: ViewState;
@@ -61,6 +62,9 @@ export function KeybindBar({ view, showHints = true, onToggle }: KeybindBarProps
           ?
         </button>
       )}
+      <span className="keybind-bar__version" title="Frontend version">
+        v{FRONTEND_VERSION}
+      </span>
     </div>
   );
 }

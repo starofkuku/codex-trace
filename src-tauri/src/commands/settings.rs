@@ -10,6 +10,7 @@ use crate::state::AppState;
 pub struct SettingsResponse {
     pub sessions_dir: Option<String>,
     pub default_dir: String,
+    pub backend_version: &'static str,
 }
 
 pub fn platform_default_dir() -> String {
@@ -27,6 +28,7 @@ pub fn build_settings_response(settings: &Settings) -> SettingsResponse {
     SettingsResponse {
         sessions_dir: settings.sessions_dir.clone(),
         default_dir: platform_default_dir(),
+        backend_version: env!("CARGO_PKG_VERSION"),
     }
 }
 
@@ -55,4 +57,15 @@ pub async fn set_sessions_dir(
     guard.sessions_dir = path;
     crate::settings::save_settings(&guard)?;
     Ok(build_settings_response(&guard))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_response_reports_backend_package_version() {
+        let response = build_settings_response(&Settings::default());
+        assert_eq!(response.backend_version, env!("CARGO_PKG_VERSION"));
+    }
 }

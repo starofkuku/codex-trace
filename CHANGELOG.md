@@ -4,6 +4,19 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.11] — 2026-08-20
+
+### Added
+
+- **On-demand frontend updates**. Let Docker/web users download, validate, atomically install, and
+  reload the latest single-file frontend from Settings without restarting the backend.
+- **Frontend download proxy**. Support `CODEXTRACE_FRONTEND_PROXY` for both container startup and
+  on-demand frontend downloads.
+- **Version visibility**. Show the frontend version in the status bar and compare frontend and
+  backend versions in Settings, including explicit mismatch and unavailable states.
+
+[0.4.11]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.11
+
 ## [0.4.10] — 2026-08-20
 
 ### Changed

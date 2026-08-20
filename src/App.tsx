@@ -304,6 +304,7 @@ export function App() {
           onSaved={(dir) => {
             discoverSessions(dir);
           }}
+          onFrontendUpdated={() => window.location.reload()}
         />
       )}
     </div>

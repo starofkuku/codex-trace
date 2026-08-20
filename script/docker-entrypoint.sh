@@ -12,7 +12,7 @@ download_frontend() {
     trap 'rm -f "$tmp_file"' EXIT HUP INT TERM
 
     echo "Downloading frontend from $frontend_url"
-    curl \
+    set -- \
         --fail \
         --location \
         --silent \
@@ -25,6 +25,10 @@ download_frontend() {
         --proto-redir '=https' \
         --output "$tmp_file" \
         "$frontend_url"
+    if [ -n "${CODEXTRACE_FRONTEND_PROXY:-}" ]; then
+        set -- --proxy "$CODEXTRACE_FRONTEND_PROXY" "$@"
+    fi
+    curl "$@"
 
     if [ ! -s "$tmp_file" ] || ! grep -Eiq '<!doctype html|<html' "$tmp_file"; then
         echo "Downloaded frontend is not a valid HTML document" >&2

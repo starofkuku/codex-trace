@@ -122,12 +122,26 @@ Default sessions directory:
 
 Environment variables for headless and Docker mode:
 
-| Variable                  | Default                   | Description                       |
-| ------------------------- | ------------------------- | --------------------------------- |
-| `CODEXTRACE_HTTP_HOST`    | `127.0.0.1`               | Bind host                         |
-| `CODEXTRACE_HTTP_PORT`    | `11424`                   | Bind port                         |
-| `CODEXTRACE_STATIC_DIR`   | —                         | Directory for the downloaded UI   |
-| `CODEXTRACE_FRONTEND_URL` | `frontend-latest` release | Single-file frontend download URL |
+| Variable                    | Default                   | Description                                   |
+| --------------------------- | ------------------------- | --------------------------------------------- |
+| `CODEXTRACE_HTTP_HOST`      | `127.0.0.1`               | Bind host                                     |
+| `CODEXTRACE_HTTP_PORT`      | `11424`                   | Bind port                                     |
+| `CODEXTRACE_STATIC_DIR`     | —                         | Directory for the downloaded UI               |
+| `CODEXTRACE_FRONTEND_URL`   | `frontend-latest` release | Single-file frontend download URL             |
+| `CODEXTRACE_FRONTEND_PROXY` | —                         | HTTP(S) proxy used only for frontend download |
+
+In Docker/web mode, open Settings and select **Update Frontend** to download the configured HTML
+again. The backend validates and replaces `index.html`; the browser reloads after a successful
+update. The same operation is available as `POST /api/frontend/update`.
+
+Set the proxy in the shell or a Compose `.env` file when GitHub is not directly reachable:
+
+```dotenv
+CODEXTRACE_FRONTEND_PROXY=http://192.168.1.10:7890
+```
+
+The proxy applies both when the container starts and when **Update Frontend** is selected. Leave it
+empty to connect directly.
 
 ## Development
 

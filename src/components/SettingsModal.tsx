@@ -2,23 +2,30 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../lib/invoke";
 import { PopoutModal } from "./PopoutModal";
 import type { SettingsResponse } from "../../shared/types";
+import { RefreshIcon } from "./Icons";
+import { isTauri } from "../lib/isTauri";
+import { FRONTEND_VERSION, versionStatus } from "../lib/version";
 
 interface SettingsModalProps {
   onClose: () => void;
   onSaved: (dir: string) => void;
+  onFrontendUpdated: () => void;
 }
 
-export function SettingsModal({ onClose, onSaved }: SettingsModalProps) {
+export function SettingsModal({ onClose, onSaved, onFrontendUpdated }: SettingsModalProps) {
   const [sessionsDir, setSessionsDir] = useState("");
   const [defaultDir, setDefaultDir] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [updatingFrontend, setUpdatingFrontend] = useState(false);
+  const [backendVersion, setBackendVersion] = useState<string>();
 
   useEffect(() => {
     invoke<SettingsResponse>("get_settings")
       .then((res) => {
         setDefaultDir(res.default_dir);
         setSessionsDir(res.sessions_dir ?? res.default_dir);
+        setBackendVersion(res.backend_version);
       })
       .catch(console.error);
   }, []);
@@ -53,6 +60,19 @@ export function SettingsModal({ onClose, onSaved }: SettingsModalProps) {
     }
   }, [onSaved, onClose]);
 
+  const handleFrontendUpdate = useCallback(async () => {
+    setUpdatingFrontend(true);
+    setError("");
+    try {
+      await invoke("update_frontend");
+      onFrontendUpdated();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setUpdatingFrontend(false);
+    }
+  }, [onFrontendUpdated]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "Enter") {
@@ -63,12 +83,14 @@ export function SettingsModal({ onClose, onSaved }: SettingsModalProps) {
     [handleSave],
   );
 
+  const currentVersionStatus = versionStatus(backendVersion);
+
   return (
     <PopoutModal
       onClose={onClose}
       header={<span className="settings-modal__title">Settings</span>}
       initialWidth={520}
-      initialHeight={240}
+      initialHeight={isTauri ? 280 : 340}
     >
       <div className="settings-modal">
         <label className="settings-modal__label" htmlFor="sessions-dir">
@@ -89,19 +111,46 @@ export function SettingsModal({ onClose, onSaved }: SettingsModalProps) {
           autoFocus
         />
         <p className="settings-modal__hint">Default: {defaultDir}</p>
+        {!isTauri && (
+          <div className="settings-modal__frontend">
+            <span className="settings-modal__label">Web Frontend</span>
+            <button
+              type="button"
+              className="settings-modal__btn settings-modal__btn--update"
+              onClick={handleFrontendUpdate}
+              disabled={saving || updatingFrontend}
+            >
+              <RefreshIcon />
+              {updatingFrontend ? "Updating..." : "Update Frontend"}
+            </button>
+          </div>
+        )}
+        <div className="settings-modal__version">
+          <span className="settings-modal__label">Version</span>
+          <div className="settings-modal__version-values">
+            <span>Frontend v{FRONTEND_VERSION}</span>
+            <span>Backend {backendVersion ? `v${backendVersion}` : "unknown"}</span>
+            {currentVersionStatus === "mismatch" && (
+              <span className="settings-modal__version-warning">Update required</span>
+            )}
+            {currentVersionStatus === "unknown" && (
+              <span className="settings-modal__version-warning">Backend version unavailable</span>
+            )}
+          </div>
+        </div>
         {error && <p className="settings-modal__error">{error}</p>}
         <div className="settings-modal__actions">
           <button
             className="settings-modal__btn settings-modal__btn--secondary"
             onClick={handleReset}
-            disabled={saving}
+            disabled={saving || updatingFrontend}
           >
             Reset to Default
           </button>
           <button
             className="settings-modal__btn settings-modal__btn--primary"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || updatingFrontend}
           >
             Save
           </button>

@@ -35,6 +35,18 @@ After every code change (src, tests, config that affects build), always add enou
 npx oxfmt && npx oxlint && npx tsc --noEmit && cargo fmt --manifest-path src-tauri/Cargo.toml && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+## Release Workflow
+
+When `$release-tag-push` is requested, first classify the staged changes:
+
+- For frontend-only changes (the frontend source, tests, styles, or build files watched by
+  `.github/workflows/frontend.yml`), run the required checks, commit, and push the current branch
+  only. Do not bump the application version, update the release changelog, create a `v*` tag, or
+  trigger the backend/Docker release. The `main` push publishes the `frontend-latest` HTML.
+- If any backend, Docker, Tauri, backend contract, or versioned release workflow file changes,
+  follow the normal release flow: update release metadata, create the next annotated semver tag,
+  and push the branch followed by the tag.
+
 ## Architecture
 
 - **Backend:** Rust + Tauri v2 + axum HTTP server (port 11424)

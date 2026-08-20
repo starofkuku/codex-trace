@@ -21,6 +21,7 @@
 #   CODEXTRACE_HTTP_PORT     bind port      (default: 1422 in this image)
 #   CODEXTRACE_STATIC_DIR    downloaded UI  (default: /app/dist in this image)
 #   CODEXTRACE_FRONTEND_URL  single HTML URL (default: frontend-latest release)
+#   CODEXTRACE_FRONTEND_PROXY optional HTTP(S) proxy for frontend downloads
 # =============================================================================
 
 ARG RUST_IMAGE=rust:latest
@@ -79,6 +80,7 @@ ENV CODEXTRACE_HTTP_HOST=0.0.0.0 \
     CODEXTRACE_HTTP_PORT=1422 \
     CODEXTRACE_STATIC_DIR=/app/dist \
     CODEXTRACE_FRONTEND_URL=https://github.com/starofkuku/codex-trace/releases/download/frontend-latest/codex-trace-frontend.html \
+    CODEXTRACE_FRONTEND_PROXY= \
     XDG_CONFIG_HOME=/home/app/.config \
     XDG_DATA_HOME=/home/app/.local/share
 

@@ -13,6 +13,7 @@ services:
       CODEXTRACE_HTTP_PORT: 1422
       CODEXTRACE_STATIC_DIR: /app/dist
       CODEXTRACE_FRONTEND_URL: ${CODEXTRACE_FRONTEND_URL:-https://github.com/starofkuku/codex-trace/releases/download/frontend-latest/codex-trace-frontend.html}
+      CODEXTRACE_FRONTEND_PROXY: ${CODEXTRACE_FRONTEND_PROXY:-}
     volumes:
       - "${CODEX_SESSIONS_DIR:-${HOME}/.codex/sessions}:/home/app/.codex/sessions:ro"
     healthcheck:

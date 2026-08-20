@@ -15,6 +15,7 @@ const routes: Record<string, Route> = {
     path: "/api/settings/dir",
     body: (a) => ({ path: a.path ?? null }),
   },
+  update_frontend: { method: "POST", path: "/api/frontend/update" },
   list_sessions: {
     method: "POST",
     path: "/api/sessions",

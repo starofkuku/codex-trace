@@ -34,12 +34,15 @@ PATH="$test_dir/bin:$PATH" \
     MOCK_CURL_ARGS_FILE="$test_dir/curl-args" \
     CODEXTRACE_STATIC_DIR="$test_dir/static" \
     CODEXTRACE_FRONTEND_URL="https://example.test/frontend.html" \
+    CODEXTRACE_FRONTEND_PROXY="http://proxy.example.test:7890" \
     "$repo_dir/script/docker-entrypoint.sh" \
     sh -c 'test -s "$CODEXTRACE_STATIC_DIR/index.html"' test --headless
 
 grep -q '<!doctype html>' "$test_dir/static/index.html"
 grep -q '^--connect-timeout$' "$test_dir/curl-args"
 grep -q '^--max-time$' "$test_dir/curl-args"
+grep -q '^--proxy$' "$test_dir/curl-args"
+grep -q '^http://proxy.example.test:7890$' "$test_dir/curl-args"
 if grep -q '^--retry-all-errors$' "$test_dir/curl-args"; then
     echo "entrypoint uses curl retry-all-errors" >&2
     exit 1
