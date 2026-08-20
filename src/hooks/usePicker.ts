@@ -47,14 +47,15 @@ export function usePicker() {
   }, []);
 
   const updateSessionActivity = useCallback(
-    (path: string, ongoing: boolean, fileSizeBytes?: number) => {
+    (path: string, ongoing: boolean, fileSizeBytes?: number, lastActivityTime?: string) => {
       setState((prev) => {
         const idx = prev.sessions.findIndex((s) => s.path === path);
         if (idx === -1) return prev;
         const current = prev.sessions[idx];
         if (
           current.is_ongoing === ongoing &&
-          (fileSizeBytes === undefined || current.file_size_bytes === fileSizeBytes)
+          (fileSizeBytes === undefined || current.file_size_bytes === fileSizeBytes) &&
+          (lastActivityTime === undefined || current.last_activity_time === lastActivityTime)
         ) {
           return prev;
         }
@@ -62,6 +63,7 @@ export function usePicker() {
         sessions[idx] = {
           ...current,
           is_ongoing: ongoing,
+          ...(lastActivityTime === undefined ? {} : { last_activity_time: lastActivityTime }),
           ...(fileSizeBytes === undefined ? {} : { file_size_bytes: fileSizeBytes }),
         };
         return { ...prev, sessions };
@@ -76,7 +78,12 @@ export function usePicker() {
   );
 
   useTauriEvent<SessionActivityUpdate>("session-activity", (update) => {
-    updateSessionActivity(update.path, update.is_ongoing, update.file_size_bytes);
+    updateSessionActivity(
+      update.path,
+      update.is_ongoing,
+      update.file_size_bytes,
+      update.last_activity_time,
+    );
   });
 
   // Structural changes carry no session data. Re-fetch only when a session is added or removed;

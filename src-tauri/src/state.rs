@@ -32,6 +32,7 @@ const MAX_PARSED_SESSION_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 pub struct SessionActivityUpdate {
     pub path: String,
     pub is_ongoing: bool,
+    pub last_activity_time: String,
     pub file_size_bytes: u64,
 }
 
@@ -207,6 +208,7 @@ impl AppState {
                 if let Some(tracker) = trackers.get(&session.path) {
                     let snapshot = tracker.snapshot();
                     session.is_ongoing = snapshot.is_ongoing;
+                    session.last_activity_time = snapshot.last_activity_time;
                     session.file_size_bytes = snapshot.file_size_bytes;
                 } else if let Some((ref path, ongoing)) = fallback {
                     if session.path == *path {
@@ -258,10 +260,11 @@ impl AppState {
                 snapshot
             };
 
-            if before != Some(snapshot) {
+            if before.as_ref() != Some(&snapshot) {
                 result.updates.push(SessionActivityUpdate {
                     path: key,
                     is_ongoing: snapshot.is_ongoing,
+                    last_activity_time: snapshot.last_activity_time,
                     file_size_bytes: snapshot.file_size_bytes,
                 });
             }
@@ -296,6 +299,7 @@ impl AppState {
                                 cache.sessions.iter_mut().find(|s| s.path == update.path)
                             {
                                 session.is_ongoing = update.is_ongoing;
+                                session.last_activity_time = update.last_activity_time.clone();
                                 session.file_size_bytes = update.file_size_bytes;
                             }
                         }
@@ -400,6 +404,7 @@ mod tests {
                     ai_title: None,
                     approval_mode: None,
                     history_base_thread_id: None,
+                    last_activity_time: String::new(),
                     file_size_bytes: 0,
                     has_session_end: false,
                 }],
@@ -449,6 +454,7 @@ mod tests {
                     ai_title: None,
                     approval_mode: None,
                     history_base_thread_id: None,
+                    last_activity_time: String::new(),
                     file_size_bytes: 0,
                     has_session_end: false,
                 }],
@@ -515,10 +521,18 @@ mod tests {
         assert_eq!(result.updates.len(), 1);
         assert_eq!(result.updates[0].path, active_path.to_string_lossy());
         assert!(!result.updates[0].is_ongoing);
+        assert_eq!(result.updates[0].last_activity_time, "2026-08-18T12:00:02Z");
 
         let refreshed = state
             .discover_sessions_cached(dir.path().to_str().unwrap())
             .unwrap();
         assert!(refreshed.iter().all(|session| !session.is_ongoing));
+        assert_eq!(
+            refreshed
+                .iter()
+                .find(|session| session.id == "active")
+                .map(|session| session.last_activity_time.as_str()),
+            Some("2026-08-18T12:00:02Z")
+        );
     }
 }

@@ -57,6 +57,8 @@ pub struct CodexSessionInfo {
     /// marks a whole rollout file as a continuation of another paginated thread's history.
     /// Null for legacy-history sessions or paginated threads with no inherited prefix.
     pub history_base_thread_id: Option<String>,
+    /// Timestamp of the latest valid rollout entry, used for activity ordering.
+    pub last_activity_time: String,
     /// Size of the rollout file on disk, in bytes.
     pub file_size_bytes: u64,
     /// Internal activity-parser state. This is derived during discovery and is not part of the
@@ -325,6 +327,7 @@ pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
     }
 
     // Quick scan remaining lines for turn count, model, thread_name, tokens, end_time
+    let mut last_activity_time = entry.timestamp.unwrap_or_else(|| start_time.clone());
     let mut turn_count: u32 = 0;
     let mut model: Option<String> = None;
     let mut thread_name: Option<String> = None;
@@ -346,6 +349,9 @@ pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
             Ok(v) => v,
             Err(_) => continue,
         };
+        if let Some(timestamp) = v.get("timestamp").and_then(|value| value.as_str()) {
+            last_activity_time = timestamp.to_string();
+        }
 
         let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match t {
@@ -576,6 +582,7 @@ pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
         ai_title,
         approval_mode,
         history_base_thread_id,
+        last_activity_time,
         file_size_bytes,
         has_session_end,
     })
@@ -654,6 +661,7 @@ mod tests {
         let sessions = discover_sessions(tmp.path()).unwrap();
         let session = sessions.iter().find(|s| s.id == "new-sess-id").unwrap();
         assert_eq!(session.id, "new-sess-id");
+        assert_eq!(session.last_activity_time, "2026-05-07T00:00:02Z");
         assert_eq!(
             session.file_size_bytes,
             std::fs::metadata(&path).unwrap().len()

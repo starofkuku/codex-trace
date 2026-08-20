@@ -4,6 +4,16 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.10] — 2026-08-20
+
+### Changed
+
+- **Activity-based session ordering**. Sort All, Active, Recent, and sidebar sessions by the
+  timestamp of their latest valid rollout entry, regroup resumed sessions under their latest
+  activity date, and update their position live as new entries arrive.
+
+[0.4.10]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.10
+
 ## [0.4.9] — 2026-08-20
 
 ### Added

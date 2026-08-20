@@ -26,9 +26,10 @@ impl FileFingerprint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivitySnapshot {
     pub is_ongoing: bool,
+    pub last_activity_time: String,
     pub file_size_bytes: u64,
 }
 
@@ -45,6 +46,7 @@ pub struct ActivityTracker {
     turn_count: u32,
     has_session_end: bool,
     is_ongoing: bool,
+    last_activity_time: String,
     fingerprint: FileFingerprint,
 }
 
@@ -74,6 +76,7 @@ impl ActivityTracker {
             turn_count: info.turn_count,
             has_session_end: info.has_session_end,
             is_ongoing: info.is_ongoing,
+            last_activity_time: info.last_activity_time.clone(),
             fingerprint,
         }
     }
@@ -101,6 +104,7 @@ impl ActivityTracker {
     pub fn snapshot(&self) -> ActivitySnapshot {
         ActivitySnapshot {
             is_ongoing: self.is_ongoing,
+            last_activity_time: self.last_activity_time.clone(),
             file_size_bytes: self.fingerprint.size,
         }
     }
@@ -200,6 +204,10 @@ impl ActivityTracker {
     }
 
     fn process_entry(&mut self, entry: &RawEntry) {
+        if let Some(timestamp) = entry.timestamp.as_deref().filter(|value| !value.is_empty()) {
+            self.last_activity_time = timestamp.to_string();
+        }
+
         match entry.entry_type.as_str() {
             "session_end" => {
                 self.has_session_end = true;
@@ -328,6 +336,7 @@ mod tests {
 
         let snapshot = tracker.refresh().unwrap();
         assert!(!snapshot.is_ongoing);
+        assert_eq!(snapshot.last_activity_time, "2026-08-18T12:00:02Z");
         assert!(snapshot.file_size_bytes > initial_size);
     }
 

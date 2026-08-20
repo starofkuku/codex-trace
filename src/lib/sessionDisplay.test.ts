@@ -23,6 +23,7 @@ function makeSession(overrides: Partial<CodexSessionInfo> = {}): CodexSessionInf
     is_archived: false,
     approval_mode: null,
     history_base_thread_id: null,
+    last_activity_time: "2026-04-26T10:00:00Z",
     file_size_bytes: 0,
     worker_nickname: null,
     worker_role: null,

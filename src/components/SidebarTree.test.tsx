@@ -24,6 +24,7 @@ function makeSession(overrides: Partial<CodexSessionInfo> = {}): CodexSessionInf
     is_archived: false,
     approval_mode: null,
     history_base_thread_id: null,
+    last_activity_time: "2026-04-26T10:00:00Z",
     file_size_bytes: 1_572_864,
     worker_nickname: null,
     worker_role: null,
@@ -174,8 +175,16 @@ describe("SidebarTree", () => {
 
   it("groups sessions from different dates under separate headers", () => {
     const sessions = [
-      makeSession({ path: "/a.jsonl", thread_name: "Session A", date_group: "2026/04/25" }),
-      makeSession({ path: "/b.jsonl", thread_name: "Session B", date_group: "2026/04/26" }),
+      makeSession({
+        path: "/a.jsonl",
+        thread_name: "Session A",
+        last_activity_time: "2026-04-25T12:00:00Z",
+      }),
+      makeSession({
+        path: "/b.jsonl",
+        thread_name: "Session B",
+        last_activity_time: "2026-04-26T12:00:00Z",
+      }),
     ];
     render(
       <SidebarTree
@@ -190,6 +199,50 @@ describe("SidebarTree", () => {
     expect(screen.getByText("2026/04/26")).toBeInTheDocument();
     expect(screen.getByText("Session A")).toBeInTheDocument();
     expect(screen.getByText("Session B")).toBeInTheDocument();
+  });
+
+  it("orders and groups sessions by latest activity", () => {
+    const { container } = render(
+      <SidebarTree
+        sessions={[
+          makeSession({
+            path: "/new-session.jsonl",
+            thread_name: "New session",
+            start_time: "2026-08-20T08:00:00Z",
+            last_activity_time: "2026-08-20T08:01:00Z",
+            date_group: "2026/08/20",
+          }),
+          makeSession({
+            path: "/resumed-session.jsonl",
+            thread_name: "Resumed old session",
+            start_time: "2026-01-01T08:00:00Z",
+            last_activity_time: "2026-08-20T09:00:00Z",
+            date_group: "2026/01/01",
+          }),
+          makeSession({
+            path: "/yesterday.jsonl",
+            thread_name: "Yesterday",
+            start_time: "2026-08-19T08:00:00Z",
+            last_activity_time: "2026-08-19T09:00:00Z",
+            date_group: "2026/08/19",
+          }),
+        ]}
+        selectedPath={null}
+        collapsedDates={new Set()}
+        onSelectSession={vi.fn()}
+        onToggleDate={vi.fn()}
+      />,
+    );
+
+    expect(
+      Array.from(container.querySelectorAll(".sidebar-tree__date"), (node) => node.textContent),
+    ).toEqual(["2026/08/20", "2026/08/19"]);
+    expect(
+      Array.from(
+        container.querySelectorAll(".sidebar-tree__session-label"),
+        (node) => node.textContent,
+      ),
+    ).toEqual(["Resumed old session", "New session", "Yesterday"]);
   });
 
   it("hides inline workers from the top-level list", () => {

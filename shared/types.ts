@@ -356,6 +356,8 @@ export interface CodexSessionInfo {
    * the whole rollout file as a continuation of another paginated thread's history.
    * Null for legacy-history sessions or paginated threads with no inherited prefix. */
   history_base_thread_id: string | null;
+  /** Timestamp of the latest valid rollout entry, used for activity ordering. */
+  last_activity_time: string;
   /** Size of the rollout file on disk, in bytes. */
   file_size_bytes: number;
 }
@@ -363,6 +365,7 @@ export interface CodexSessionInfo {
 export interface SessionActivityUpdate {
   path: string;
   is_ongoing: boolean;
+  last_activity_time: string;
   file_size_bytes: number;
 }
 

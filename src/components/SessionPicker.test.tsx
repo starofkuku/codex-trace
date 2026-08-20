@@ -8,6 +8,7 @@ function makeSession(
   name: string,
   isOngoing: boolean,
   startTime = "2026-08-18T12:00:00Z",
+  lastActivityTime = startTime,
 ): CodexSessionInfo {
   return {
     id: name,
@@ -29,6 +30,7 @@ function makeSession(
     is_archived: false,
     approval_mode: null,
     history_base_thread_id: null,
+    last_activity_time: lastActivityTime,
     file_size_bytes: 100,
     worker_nickname: null,
     worker_role: null,
@@ -62,6 +64,25 @@ describe("SessionPicker", () => {
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("orders all sessions by latest activity", () => {
+    const { container } = render(
+      <SessionPicker
+        {...defaultProps}
+        sessions={[
+          makeSession("new-session", false, "2026-08-20T08:00:00Z", "2026-08-20T08:01:00Z"),
+          makeSession("resumed-old-session", false, "2026-01-01T08:00:00Z", "2026-08-20T09:00:00Z"),
+        ]}
+      />,
+    );
+
+    expect(
+      Array.from(
+        container.querySelectorAll(".picker__session-preview"),
+        (node) => node.textContent,
+      ),
+    ).toEqual(["resumed-old-session", "new-session"]);
+  });
+
   it("shows only active sessions when the active filter is enabled", () => {
     render(
       <SessionPicker
@@ -90,9 +111,14 @@ describe("SessionPicker", () => {
     expect(onSessionFilterChange).toHaveBeenCalledWith("active");
   });
 
-  it("shows only the most recent sessions when the recent filter is enabled", () => {
+  it("shows only the most recently active sessions when the recent filter is enabled", () => {
     const sessions = Array.from({ length: RECENT_SESSION_LIMIT + 1 }, (_, index) =>
-      makeSession(`session-${index}`, false, `2026-08-18T12:${String(index).padStart(2, "0")}:00Z`),
+      makeSession(
+        `session-${index}`,
+        false,
+        "2026-01-01T00:00:00Z",
+        `2026-08-18T12:${String(index).padStart(2, "0")}:00Z`,
+      ),
     );
 
     render(<SessionPicker {...defaultProps} sessionFilter="recent" sessions={sessions} />);

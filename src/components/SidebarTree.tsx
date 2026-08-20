@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { CodexSessionInfo } from "../../shared/types";
 import { formatFileSize, timeAgo } from "../../shared/format";
 import { sessionDisplayName } from "../lib/sessionDisplay";
+import { sessionActivityDateGroup, sortSessionsByActivity } from "../lib/sessionFilter";
 import { OngoingDots } from "./OngoingDots";
 
 interface SidebarTreeProps {
@@ -27,12 +28,12 @@ function buildWorkerMap(sessions: CodexSessionInfo[]): Map<string, CodexSessionI
   return map;
 }
 
-/** Group top-level sessions (non-inline-workers) by date_group, preserving order. */
+/** Group top-level sessions by their latest activity date, newest first. */
 function groupByDate(sessions: CodexSessionInfo[]): Map<string, CodexSessionInfo[]> {
   const map = new Map<string, CodexSessionInfo[]>();
-  for (const s of sessions) {
+  for (const s of sortSessionsByActivity(sessions)) {
     if (s.is_inline_worker) continue;
-    const dg = s.date_group || "unknown";
+    const dg = sessionActivityDateGroup(s);
     if (!map.has(dg)) map.set(dg, []);
     map.get(dg)!.push(s);
   }
@@ -126,7 +127,7 @@ export function SidebarTree({
                         <span className="sidebar-tree__size">
                           {formatFileSize(s.file_size_bytes)}
                         </span>
-                        <span className="sidebar-tree__time">{timeAgo(s.start_time)}</span>
+                        <span className="sidebar-tree__time">{timeAgo(s.last_activity_time)}</span>
                       </div>
                       {(s.is_external_worker || workers) && (
                         <div className="sidebar-tree__session-meta">
@@ -180,7 +181,9 @@ export function SidebarTree({
                               <span className="sidebar-tree__size">
                                 {formatFileSize(w.file_size_bytes)}
                               </span>
-                              <span className="sidebar-tree__time">{timeAgo(w.start_time)}</span>
+                              <span className="sidebar-tree__time">
+                                {timeAgo(w.last_activity_time)}
+                              </span>
                             </div>
                           </div>
                         );

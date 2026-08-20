@@ -2,7 +2,7 @@ import { useRef, useMemo } from "react";
 import type { CodexSessionInfo } from "../../shared/types";
 import { formatTokens, truncate } from "../../shared/format";
 import { shortModel, formatExactTime } from "../lib/format";
-import { filterSessions, type SessionFilter } from "../lib/sessionFilter";
+import { filterSessions, sessionActivityDateGroup, type SessionFilter } from "../lib/sessionFilter";
 import { sessionDisplayName } from "../lib/sessionDisplay";
 import { getModelColor } from "../lib/theme";
 import { OngoingDots } from "./OngoingDots";
@@ -26,7 +26,7 @@ function groupByDate(
 ): Array<{ category: string; items: CodexSessionInfo[] }> {
   const map = new Map<string, CodexSessionInfo[]>();
   for (const s of sessions) {
-    const key = s.date_group || "unknown";
+    const key = sessionActivityDateGroup(s);
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(s);
   }
@@ -198,7 +198,9 @@ export function SessionPicker({
                         inline worker
                       </span>
                     )}
-                    <span className="picker__session-time">{formatExactTime(s.start_time)}</span>
+                    <span className="picker__session-time">
+                      {formatExactTime(s.last_activity_time)}
+                    </span>
                   </div>
                 </div>
               );
