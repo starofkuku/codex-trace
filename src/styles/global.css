@@ -3746,13 +3746,40 @@ body {
 .turn-detail__msg-header {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
   margin-bottom: 2px;
 }
 
 .turn-detail__msg-time {
   font-size: 11px;
   color: var(--text-secondary);
-  margin-left: auto;
+}
+
+.message-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.message-copy-button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.message-copy-button--copied {
+  color: var(--success, #5faf5f);
+}
+.message-copy-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* Turn detail markdown */
@@ -3960,8 +3987,10 @@ body {
   font-weight: 600;
   color: var(--icon-output);
 }
+.complementary-item__header .message-copy-button {
+  margin-left: auto;
+}
 .complementary-item__time {
   font-size: 11px;
   color: var(--text-secondary);
-  margin-left: auto;
 }

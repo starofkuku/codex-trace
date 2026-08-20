@@ -4,6 +4,7 @@ import { ComplementaryItem } from "./ComplementaryItem";
 import { OngoingDots } from "./OngoingDots";
 import { BackIcon, CodexIcon } from "./Icons";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { CopyMessageButton } from "./CopyMessageButton";
 import { shortModel, formatExactTime } from "../lib/format";
 import { getContextColor, getModelColor } from "../lib/theme";
 import { contextRemainingPercent, formatTokens, formatDuration } from "../../shared/format";
@@ -211,13 +212,14 @@ export function TurnDetail({
             <div className="turn-detail__section turn-detail__section--final">
               <div className="turn-detail__section-label">Final answer</div>
               <div className="turn-detail__msg">
-                {finalAnswer.timestamp && (
-                  <div className="turn-detail__msg-header">
+                <div className="turn-detail__msg-header">
+                  <CopyMessageButton text={finalAnswer.text} label="Final answer content" />
+                  {finalAnswer.timestamp && (
                     <span className="turn-detail__msg-time">
                       {formatExactTime(finalAnswer.timestamp)}
                     </span>
-                  </div>
-                )}
+                  )}
+                </div>
                 <div className="turn-detail__markdown">
                   <MarkdownRenderer content={finalAnswer.text} />
                 </div>

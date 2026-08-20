@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type {
   AgentMessage,
@@ -298,5 +298,27 @@ describe("TurnDetail", () => {
     renderTurnDetail(makeTurn());
 
     expect(screen.queryByText("Warnings")).not.toBeInTheDocument();
+  });
+
+  it("copies the complete original final answer", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const text = "Summary\n\n- first\n- second\n\n`inline code`";
+    renderTurnDetail(
+      makeTurn({
+        agent_messages: [{ ...FINAL_MSG, text }],
+        final_answer: text,
+      }),
+    );
+
+    const copyButton = screen.getByRole("button", { name: "Copy Final answer content" });
+    expect(copyButton.nextElementSibling).toHaveClass("turn-detail__msg-time");
+    fireEvent.click(copyButton);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(text));
+    expect(screen.getByRole("button", { name: "Copied Final answer content" })).toBeVisible();
   });
 });

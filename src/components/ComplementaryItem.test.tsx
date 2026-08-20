@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "../../shared/types";
 import { ComplementaryItem } from "./ComplementaryItem";
 
@@ -21,6 +21,9 @@ describe("ComplementaryItem", () => {
     expect(screen.getByText("INLINE_PROSE")).toBeInTheDocument();
     expect(screen.getByText("Complementary")).toBeInTheDocument();
     expect(document.querySelector(".complementary-item__chevron")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Copy Complementary content" }).nextElementSibling,
+    ).toHaveClass("complementary-item__time");
   });
 
   it("renders markdown in the prose", () => {
@@ -31,5 +34,21 @@ describe("ComplementaryItem", () => {
   it("omits the timestamp when none is present", () => {
     render(<ComplementaryItem msg={makeMsg({ timestamp: "" })} />);
     expect(document.querySelector(".complementary-item__time")).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy Complementary content" })).toBeInTheDocument();
+  });
+
+  it("copies the complete original message", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const text = "First line\n\n```ts\nconst value = 1;\n```";
+    render(<ComplementaryItem msg={makeMsg({ text })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy Complementary content" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(text));
+    expect(screen.getByRole("button", { name: "Copied Complementary content" })).toBeVisible();
   });
 });

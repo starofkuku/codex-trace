@@ -1,6 +1,7 @@
 import type { AgentMessage } from "../../shared/types";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { OutputIcon } from "./Icons";
+import { CopyMessageButton } from "./CopyMessageButton";
 import { formatExactTime } from "../lib/format";
 
 interface ComplementaryItemProps {
@@ -19,6 +20,7 @@ export function ComplementaryItem({ msg }: ComplementaryItemProps) {
           <OutputIcon />
         </span>
         <span className="complementary-item__name">Complementary</span>
+        <CopyMessageButton text={msg.text} label="Complementary content" />
         {msg.timestamp && (
           <span className="complementary-item__time">{formatExactTime(msg.timestamp)}</span>
         )}
