@@ -2631,6 +2631,7 @@ body {
   border-left-color: var(--accent);
 }
 .sidebar-tree__session-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2668,6 +2669,24 @@ body {
   white-space: nowrap;
   flex-shrink: 0;
 }
+.sidebar-tree__copy-actions {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  display: flex;
+  gap: 2px;
+  padding-left: 6px;
+  background: var(--bg-hover);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.sidebar-tree__session:hover .sidebar-tree__copy-actions,
+.sidebar-tree__session:focus-within .sidebar-tree__copy-actions,
+.sidebar-tree__copy-actions--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
 .sidebar-tree__copy-button {
   display: inline-flex;
   align-items: center;
@@ -2681,12 +2700,6 @@ body {
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  opacity: 0;
-}
-.sidebar-tree__session:hover .sidebar-tree__copy-button,
-.sidebar-tree__session:focus-within .sidebar-tree__copy-button,
-.sidebar-tree__copy-button--copied {
-  opacity: 1;
 }
 .sidebar-tree__copy-button:hover {
   background: var(--bg-hover);

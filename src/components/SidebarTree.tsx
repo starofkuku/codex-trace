@@ -147,7 +147,9 @@ export function SidebarTree({
                       </span>
                       <span className="sidebar-tree__time">{timeAgo(s.last_activity_time)}</span>
                       {!selectionMode && (
-                        <>
+                        <span
+                          className={`sidebar-tree__copy-actions${copiedTarget?.startsWith(`${s.path}:`) ? " sidebar-tree__copy-actions--visible" : ""}`}
+                        >
                           <button
                             type="button"
                             className={`sidebar-tree__copy-button${copiedTarget === `${s.path}:id` ? " sidebar-tree__copy-button--copied" : ""}`}
@@ -190,7 +192,7 @@ export function SidebarTree({
                           >
                             {copiedTarget === `${s.path}:path` ? <VscCheck /> : <VscFile />}
                           </button>
-                        </>
+                        </span>
                       )}
                     </div>
                   </div>

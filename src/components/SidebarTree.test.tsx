@@ -176,7 +176,12 @@ describe("SidebarTree", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy session path" }));
+    const copyIdButton = screen.getByRole("button", { name: "Copy session ID" });
+    const copyPathButton = screen.getByRole("button", { name: "Copy session path" });
+    expect(copyPathButton.parentElement).toBe(copyIdButton.parentElement);
+    expect(copyPathButton.parentElement).toHaveClass("sidebar-tree__copy-actions");
+
+    fireEvent.click(copyPathButton);
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("2026/04/26/rollout-abc.jsonl"));
     expect(onSelect).not.toHaveBeenCalled();
