@@ -2,6 +2,7 @@ import { useRef, useMemo } from "react";
 import type { CodexSessionInfo } from "../../shared/types";
 import { formatTokens, truncate } from "../../shared/format";
 import { shortModel, formatExactTime } from "../lib/format";
+import { filterSessions, type SessionFilter } from "../lib/sessionFilter";
 import { sessionDisplayName } from "../lib/sessionDisplay";
 import { getModelColor } from "../lib/theme";
 import { OngoingDots } from "./OngoingDots";
@@ -13,11 +14,11 @@ interface SessionPickerProps {
   sessions: CodexSessionInfo[];
   loading: boolean;
   searchQuery: string;
-  showOngoingOnly: boolean;
+  sessionFilter: SessionFilter;
   selectedIndex: number;
   onSelectSession: (info: CodexSessionInfo) => void;
   onSearchChange: (q: string) => void;
-  onShowOngoingOnlyChange: (show: boolean) => void;
+  onSessionFilterChange: (filter: SessionFilter) => void;
 }
 
 function groupByDate(
@@ -36,19 +37,19 @@ export function SessionPicker({
   sessions,
   loading,
   searchQuery,
-  showOngoingOnly,
+  sessionFilter,
   selectedIndex,
   onSelectSession,
   onSearchChange,
-  onShowOngoingOnlyChange,
+  onSessionFilterChange,
 }: SessionPickerProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const selectedRef = useScrollToSelected(selectedIndex);
 
   const visibleSessions = useMemo(
-    () => (showOngoingOnly ? sessions.filter((session) => session.is_ongoing) : sessions),
-    [sessions, showOngoingOnly],
+    () => filterSessions(sessions, sessionFilter),
+    [sessions, sessionFilter],
   );
   const totalTokens = useMemo(
     () => visibleSessions.reduce((acc, s) => acc + (s.total_tokens ?? 0), 0),
@@ -73,19 +74,27 @@ export function SessionPicker({
           <div className="picker__filter" role="group" aria-label="Session filter">
             <button
               type="button"
-              className={`picker__filter-btn${!showOngoingOnly ? " picker__filter-btn--active" : ""}`}
-              aria-pressed={!showOngoingOnly}
-              onClick={() => onShowOngoingOnlyChange(false)}
+              className={`picker__filter-btn${sessionFilter === "all" ? " picker__filter-btn--active" : ""}`}
+              aria-pressed={sessionFilter === "all"}
+              onClick={() => onSessionFilterChange("all")}
             >
               All
             </button>
             <button
               type="button"
-              className={`picker__filter-btn${showOngoingOnly ? " picker__filter-btn--active" : ""}`}
-              aria-pressed={showOngoingOnly}
-              onClick={() => onShowOngoingOnlyChange(true)}
+              className={`picker__filter-btn${sessionFilter === "active" ? " picker__filter-btn--active" : ""}`}
+              aria-pressed={sessionFilter === "active"}
+              onClick={() => onSessionFilterChange("active")}
             >
               Active
+            </button>
+            <button
+              type="button"
+              className={`picker__filter-btn${sessionFilter === "recent" ? " picker__filter-btn--active" : ""}`}
+              aria-pressed={sessionFilter === "recent"}
+              onClick={() => onSessionFilterChange("recent")}
+            >
+              Recent
             </button>
           </div>
         </div>
@@ -107,9 +116,11 @@ export function SessionPicker({
           <div className="picker__empty">
             {searchQuery
               ? "No matching sessions"
-              : showOngoingOnly
+              : sessionFilter === "active"
                 ? "No active sessions"
-                : "No sessions found"}
+                : sessionFilter === "recent"
+                  ? "No recent sessions"
+                  : "No sessions found"}
           </div>
         )}
 

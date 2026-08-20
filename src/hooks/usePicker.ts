@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../lib/invoke";
 import type { CodexSessionInfo, SessionActivityUpdate, SettingsResponse } from "../../shared/types";
+import { filterSessions, type SessionFilter } from "../lib/sessionFilter";
 import { useTauriEvent } from "./useTauriEvent";
 
 interface PickerState {
@@ -8,7 +9,7 @@ interface PickerState {
   loading: boolean;
   searchQuery: string;
   sessionsDir: string;
-  showOngoingOnly: boolean;
+  sessionFilter: SessionFilter;
 }
 
 export function usePicker() {
@@ -17,7 +18,7 @@ export function usePicker() {
     loading: false,
     searchQuery: "",
     sessionsDir: "",
-    showOngoingOnly: false,
+    sessionFilter: "all",
   });
 
   const discoverSessions = useCallback(async (sessionsDir: string) => {
@@ -41,8 +42,8 @@ export function usePicker() {
     setState((prev) => ({ ...prev, searchQuery: query }));
   }, []);
 
-  const setShowOngoingOnly = useCallback((showOngoingOnly: boolean) => {
-    setState((prev) => ({ ...prev, showOngoingOnly }));
+  const setSessionFilter = useCallback((sessionFilter: SessionFilter) => {
+    setState((prev) => ({ ...prev, sessionFilter }));
   }, []);
 
   const updateSessionActivity = useCallback(
@@ -96,9 +97,7 @@ export function usePicker() {
     };
   }, []);
 
-  const visibleSessions = state.showOngoingOnly
-    ? state.sessions.filter((session) => session.is_ongoing)
-    : state.sessions;
+  const visibleSessions = filterSessions(state.sessions, state.sessionFilter);
   const filteredSessions = state.searchQuery
     ? visibleSessions.filter(
         (s) =>
@@ -114,9 +113,9 @@ export function usePicker() {
     loading: state.loading,
     searchQuery: state.searchQuery,
     sessionsDir: state.sessionsDir,
-    showOngoingOnly: state.showOngoingOnly,
+    sessionFilter: state.sessionFilter,
     setSearchQuery,
-    setShowOngoingOnly,
+    setSessionFilter,
     discoverSessions,
     updateSessionOngoing,
   };

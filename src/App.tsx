@@ -238,11 +238,11 @@ export function App() {
               sessions={picker.sessions}
               loading={picker.loading}
               searchQuery={picker.searchQuery}
-              showOngoingOnly={picker.showOngoingOnly}
+              sessionFilter={picker.sessionFilter}
               selectedIndex={pickerSelected}
               onSelectSession={handleSelectSession}
               onSearchChange={picker.setSearchQuery}
-              onShowOngoingOnlyChange={picker.setShowOngoingOnly}
+              onSessionFilterChange={picker.setSessionFilter}
             />
           )}
 

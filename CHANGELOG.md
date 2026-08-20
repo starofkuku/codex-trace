@@ -4,6 +4,15 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.9] — 2026-08-20
+
+### Added
+
+- **Recent-session filtering**. Add a Recent picker view showing the ten newest sessions,
+  ordered by their recorded start time alongside All and Active.
+
+[0.4.9]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.9
+
 ## [0.4.8] — 2026-08-19
 
 ### Added

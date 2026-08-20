@@ -1,9 +1,14 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexSessionInfo } from "../../shared/types";
+import { RECENT_SESSION_LIMIT, type SessionFilter } from "../lib/sessionFilter";
 import { SessionPicker } from "./SessionPicker";
 
-function makeSession(name: string, isOngoing: boolean): CodexSessionInfo {
+function makeSession(
+  name: string,
+  isOngoing: boolean,
+  startTime = "2026-08-18T12:00:00Z",
+): CodexSessionInfo {
   return {
     id: name,
     path: `/sessions/2026/08/18/rollout-${name}.jsonl`,
@@ -14,7 +19,7 @@ function makeSession(name: string, isOngoing: boolean): CodexSessionInfo {
     cli_version: null,
     thread_name: name,
     turn_count: 1,
-    start_time: "2026-08-18T12:00:00Z",
+    start_time: startTime,
     end_time: null,
     total_tokens: null,
     is_ongoing: isOngoing,
@@ -36,11 +41,11 @@ function makeSession(name: string, isOngoing: boolean): CodexSessionInfo {
 const defaultProps = {
   loading: false,
   searchQuery: "",
-  showOngoingOnly: false,
+  sessionFilter: "all" as SessionFilter,
   selectedIndex: 0,
   onSelectSession: vi.fn(),
   onSearchChange: vi.fn(),
-  onShowOngoingOnlyChange: vi.fn(),
+  onSessionFilterChange: vi.fn(),
 };
 
 describe("SessionPicker", () => {
@@ -61,7 +66,7 @@ describe("SessionPicker", () => {
     render(
       <SessionPicker
         {...defaultProps}
-        showOngoingOnly
+        sessionFilter="active"
         sessions={[makeSession("completed", false), makeSession("running", true)]}
       />,
     );
@@ -72,16 +77,43 @@ describe("SessionPicker", () => {
   });
 
   it("notifies the parent when the active filter is selected", () => {
-    const onShowOngoingOnlyChange = vi.fn();
+    const onSessionFilterChange = vi.fn();
     render(
       <SessionPicker
         {...defaultProps}
-        onShowOngoingOnlyChange={onShowOngoingOnlyChange}
+        onSessionFilterChange={onSessionFilterChange}
         sessions={[makeSession("running", true)]}
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Active" }));
-    expect(onShowOngoingOnlyChange).toHaveBeenCalledWith(true);
+    expect(onSessionFilterChange).toHaveBeenCalledWith("active");
+  });
+
+  it("shows only the most recent sessions when the recent filter is enabled", () => {
+    const sessions = Array.from({ length: RECENT_SESSION_LIMIT + 1 }, (_, index) =>
+      makeSession(`session-${index}`, false, `2026-08-18T12:${String(index).padStart(2, "0")}:00Z`),
+    );
+
+    render(<SessionPicker {...defaultProps} sessionFilter="recent" sessions={sessions} />);
+
+    expect(screen.queryByText("session-0")).not.toBeInTheDocument();
+    expect(screen.getByText("session-1")).toBeInTheDocument();
+    expect(screen.getByText(`session-${RECENT_SESSION_LIMIT}`)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recent" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("notifies the parent when the recent filter is selected", () => {
+    const onSessionFilterChange = vi.fn();
+    render(
+      <SessionPicker
+        {...defaultProps}
+        onSessionFilterChange={onSessionFilterChange}
+        sessions={[makeSession("recent", false)]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Recent" }));
+    expect(onSessionFilterChange).toHaveBeenCalledWith("recent");
   });
 });
