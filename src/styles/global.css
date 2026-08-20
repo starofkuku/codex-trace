@@ -2430,6 +2430,11 @@ body {
   color: var(--text-dim);
   text-transform: uppercase;
 }
+.app__sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 .app__sidebar--collapsed .app__sidebar-header {
   justify-content: center;
   padding-inline: 4px;
@@ -2516,7 +2521,7 @@ body {
 .sidebar-tree__group {
   margin-bottom: 2px;
 }
-.sidebar-tree__date-header {
+.sidebar-tree__group-header {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2527,15 +2532,19 @@ body {
   font-size: 12px;
   font-weight: 600;
 }
-.sidebar-tree__date-header:hover {
+.sidebar-tree__group-header:hover {
   background: var(--bg-hover);
   color: var(--text-bright);
 }
 .sidebar-tree__chevron {
   font-size: 10px;
 }
-.sidebar-tree__date {
+.sidebar-tree__group-label {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sidebar-tree__count {
   background: var(--bg-hover);
@@ -2664,6 +2673,54 @@ body {
   color: var(--text-primary);
   min-width: 0;
 }
+.picker__controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.session-group-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.session-group-toggle__button {
+  height: 22px;
+  min-width: 70px;
+  padding: 2px 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--bg-elevated);
+  border: 0;
+  border-right: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.session-group-toggle__button:last-child {
+  border-right: 0;
+}
+.session-group-toggle__button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.session-group-toggle__button--active,
+.session-group-toggle__button--active:hover {
+  color: #fff;
+  background: var(--accent);
+}
+.session-group-toggle--compact .session-group-toggle__button {
+  width: 24px;
+  min-width: 24px;
+  padding: 0;
+}
 .picker__total-tokens {
   font-size: 12px;
   font-weight: 400;
@@ -2733,8 +2790,10 @@ body {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .picker__session {
   display: flex;

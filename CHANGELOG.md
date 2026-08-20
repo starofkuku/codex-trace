@@ -4,6 +4,22 @@ All notable changes to codex-trace are documented here. Versions follow
 [semantic versioning](https://semver.org/), and this file follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## [0.4.12] — 2026-08-20
+
+### Added
+
+- **Current Codex session titles**. Read `/rename` values from `session_index.jsonl`, otherwise use
+  the latest user message, and keep both values current while sessions are active.
+- **Directory session grouping**. Group sessions by working directory by default and allow users
+  to switch between directory and activity-date views.
+
+### Changed
+
+- **Docker Codex home access**. Mount the complete Codex home read-only so containers can read both
+  rollout files and rename metadata.
+
+[0.4.12]: https://github.com/starofkuku/codex-trace/releases/tag/v0.4.12
+
 ## [0.4.11] — 2026-08-20
 
 ### Added

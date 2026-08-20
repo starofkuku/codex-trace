@@ -12,6 +12,7 @@ function makeSession(overrides: Partial<CodexSessionInfo> = {}): CodexSessionInf
     model: null,
     cli_version: null,
     thread_name: null,
+    last_user_message: "Latest user request",
     turn_count: 1,
     start_time: "2026-04-26T10:00:00Z",
     end_time: null,
@@ -39,6 +40,14 @@ describe("sessionDisplayName", () => {
     expect(sessionDisplayName(makeSession({ thread_name: "Parent Session" }))).toBe(
       "Parent Session",
     );
+  });
+
+  it("uses the latest user message when the session has not been renamed", () => {
+    expect(sessionDisplayName(makeSession())).toBe("Latest user request");
+  });
+
+  it("falls back to the id when neither a rename nor user message exists", () => {
+    expect(sessionDisplayName(makeSession({ last_user_message: null }))).toBe("worker-s");
   });
 
   it("does not use inherited thread names for worker sessions", () => {

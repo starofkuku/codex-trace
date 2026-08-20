@@ -2,15 +2,16 @@ import { useCallback, useMemo, useState } from "react";
 import type { CodexSessionInfo } from "../../shared/types";
 import { formatFileSize, timeAgo } from "../../shared/format";
 import { sessionDisplayName } from "../lib/sessionDisplay";
-import { sessionActivityDateGroup, sortSessionsByActivity } from "../lib/sessionFilter";
+import { groupSessions, type SessionGroupMode } from "../lib/sessionGrouping";
 import { OngoingDots } from "./OngoingDots";
 
 interface SidebarTreeProps {
   sessions: CodexSessionInfo[];
   selectedPath: string | null;
+  groupMode?: SessionGroupMode;
   collapsedDates: Set<string>;
   onSelectSession: (info: CodexSessionInfo) => void;
-  onToggleDate: (dateGroup: string) => void;
+  onToggleDate: (groupKey: string) => void;
 }
 
 /** Map each parent session id → its resolved inline worker sessions. */
@@ -28,21 +29,10 @@ function buildWorkerMap(sessions: CodexSessionInfo[]): Map<string, CodexSessionI
   return map;
 }
 
-/** Group top-level sessions by their latest activity date, newest first. */
-function groupByDate(sessions: CodexSessionInfo[]): Map<string, CodexSessionInfo[]> {
-  const map = new Map<string, CodexSessionInfo[]>();
-  for (const s of sortSessionsByActivity(sessions)) {
-    if (s.is_inline_worker) continue;
-    const dg = sessionActivityDateGroup(s);
-    if (!map.has(dg)) map.set(dg, []);
-    map.get(dg)!.push(s);
-  }
-  return map;
-}
-
 export function SidebarTree({
   sessions,
   selectedPath,
+  groupMode = "date",
   collapsedDates,
   onSelectSession,
   onToggleDate,
@@ -50,12 +40,19 @@ export function SidebarTree({
   const [expandedWorkers, setExpandedWorkers] = useState<Set<string>>(new Set());
 
   const workerMap = useMemo(() => buildWorkerMap(sessions), [sessions]);
-  const grouped = useMemo(() => groupByDate(sessions), [sessions]);
+  const grouped = useMemo(
+    () =>
+      groupSessions(
+        sessions.filter((session) => !session.is_inline_worker),
+        groupMode,
+      ),
+    [sessions, groupMode],
+  );
 
-  const handleToggleDate = useCallback(
-    (e: React.MouseEvent, dateGroup: string) => {
+  const handleToggleGroup = useCallback(
+    (e: React.MouseEvent, groupKey: string) => {
       e.stopPropagation();
-      onToggleDate(dateGroup);
+      onToggleDate(groupKey);
     },
     [onToggleDate],
   );
@@ -80,29 +77,31 @@ export function SidebarTree({
 
   return (
     <div className="sidebar-tree">
-      {Array.from(grouped.entries()).map(([dateGroup, group]) => {
-        const collapsed = collapsedDates.has(dateGroup);
+      {grouped.map((group) => {
+        const collapsed = collapsedDates.has(group.key);
         return (
-          <div key={dateGroup} className="sidebar-tree__group">
+          <div key={group.key} className="sidebar-tree__group">
             <div
-              className="sidebar-tree__date-header"
-              onClick={(e) => handleToggleDate(e, dateGroup)}
+              className="sidebar-tree__group-header"
+              title={group.title}
+              onClick={(e) => handleToggleGroup(e, group.key)}
               role="button"
               tabIndex={0}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") onToggleDate(dateGroup);
+                if (e.key === "Enter" || e.key === " ") onToggleDate(group.key);
               }}
             >
               <span className="sidebar-tree__chevron">{collapsed ? "▶" : "▼"}</span>
-              <span className="sidebar-tree__date">{dateGroup}</span>
-              <span className="sidebar-tree__count">{group.length}</span>
+              <span className="sidebar-tree__group-label">{group.label}</span>
+              <span className="sidebar-tree__count">{group.items.length}</span>
             </div>
 
             {!collapsed &&
-              group.map((s) => {
+              group.items.map((s) => {
                 const isSelected = s.path === selectedPath;
                 const workers = workerMap.get(s.id);
                 const workersExpanded = expandedWorkers.has(s.id);
+                const displayName = sessionDisplayName(s);
 
                 return (
                   <div key={s.path}>
@@ -122,7 +121,9 @@ export function SidebarTree({
                       }}
                     >
                       <div className="sidebar-tree__session-row">
-                        <span className="sidebar-tree__session-label">{sessionDisplayName(s)}</span>
+                        <span className="sidebar-tree__session-label" title={displayName}>
+                          {displayName}
+                        </span>
                         {s.is_ongoing && <OngoingDots count={1} />}
                         <span className="sidebar-tree__size">
                           {formatFileSize(s.file_size_bytes)}
@@ -152,6 +153,7 @@ export function SidebarTree({
                       workersExpanded &&
                       workers.map((w) => {
                         const wSelected = w.path === selectedPath;
+                        const workerDisplayName = sessionDisplayName(w);
                         return (
                           <div
                             key={w.path}
@@ -174,8 +176,11 @@ export function SidebarTree({
                               <span className="sidebar-tree__badge sidebar-tree__badge--worker">
                                 worker
                               </span>
-                              <span className="sidebar-tree__session-label">
-                                {sessionDisplayName(w)}
+                              <span
+                                className="sidebar-tree__session-label"
+                                title={workerDisplayName}
+                              >
+                                {workerDisplayName}
                               </span>
                               {w.is_ongoing && <OngoingDots count={1} />}
                               <span className="sidebar-tree__size">

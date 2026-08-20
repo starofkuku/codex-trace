@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::broadcast;
 
 use crate::parser::activity::{collect_session_paths, ActivityTracker};
@@ -34,13 +34,17 @@ pub struct SessionActivityUpdate {
     pub is_ongoing: bool,
     pub last_activity_time: String,
     pub file_size_bytes: u64,
+    pub last_user_message: Option<String>,
 }
 
 #[derive(Default)]
 pub struct ActivityReconciliation {
     pub updates: Vec<SessionActivityUpdate>,
     pub structure_changed: bool,
+    pub picker_metadata_changed: bool,
 }
+
+type SessionIndexFingerprint = Option<(u64, Option<SystemTime>)>;
 
 pub struct AppState {
     pub session_watcher: Mutex<Option<WatcherHandle>>,
@@ -51,6 +55,7 @@ pub struct AppState {
     sessions_cache: Mutex<Option<SessionsCache>>,
     parsed_sessions: Mutex<HashMap<String, Arc<Mutex<IncrementalSession>>>>,
     activity_trackers: Mutex<HashMap<String, ActivityTracker>>,
+    session_index_fingerprints: Mutex<HashMap<String, SessionIndexFingerprint>>,
 }
 
 impl AppState {
@@ -65,6 +70,7 @@ impl AppState {
             sessions_cache: Mutex::new(None),
             parsed_sessions: Mutex::new(HashMap::new()),
             activity_trackers: Mutex::new(HashMap::new()),
+            session_index_fingerprints: Mutex::new(HashMap::new()),
         }
     }
 
@@ -241,6 +247,20 @@ impl AppState {
         let mut trackers = self.activity_trackers.lock().map_err(|e| e.to_string())?;
         let mut result = ActivityReconciliation::default();
 
+        let index_fingerprint = session_index_fingerprint(sessions_dir);
+        if let Ok(mut fingerprints) = self.session_index_fingerprints.lock() {
+            match fingerprints.get(sessions_dir) {
+                Some(previous) if previous != &index_fingerprint => {
+                    result.picker_metadata_changed = true;
+                    fingerprints.insert(sessions_dir.to_string(), index_fingerprint);
+                }
+                None => {
+                    fingerprints.insert(sessions_dir.to_string(), index_fingerprint);
+                }
+                _ => {}
+            }
+        }
+
         for path in &paths {
             let key = path.to_string_lossy().to_string();
             let before = trackers.get(&key).map(|tracker| tracker.snapshot());
@@ -266,6 +286,7 @@ impl AppState {
                     is_ongoing: snapshot.is_ongoing,
                     last_activity_time: snapshot.last_activity_time,
                     file_size_bytes: snapshot.file_size_bytes,
+                    last_user_message: snapshot.last_user_message,
                 });
             }
         }
@@ -290,7 +311,9 @@ impl AppState {
         // Keep the short-lived picker cache consistent with incremental activity updates. A
         // structural change is invalidated by the watcher after this method returns.
         drop(trackers);
-        if !result.structure_changed && !result.updates.is_empty() {
+        if !result.structure_changed
+            && (!result.updates.is_empty() || result.picker_metadata_changed)
+        {
             if let Ok(mut cache) = self.sessions_cache.lock() {
                 if let Some(cache) = cache.as_mut() {
                     if cache.dir == sessions_dir {
@@ -301,7 +324,15 @@ impl AppState {
                                 session.is_ongoing = update.is_ongoing;
                                 session.last_activity_time = update.last_activity_time.clone();
                                 session.file_size_bytes = update.file_size_bytes;
+                                session.last_user_message = update.last_user_message.clone();
                             }
+                        }
+                        if result.picker_metadata_changed {
+                            crate::parser::discover::apply_session_index(
+                                std::path::Path::new(sessions_dir),
+                                &mut cache.sessions,
+                            );
+                            cache.cached_at = Instant::now();
                         }
                     }
                 }
@@ -329,6 +360,9 @@ impl AppState {
         let path = std::path::Path::new(dir);
         let sessions = crate::parser::discover::discover_sessions(path)?;
         self.seed_session_activity(&sessions);
+        if let Ok(mut fingerprints) = self.session_index_fingerprints.lock() {
+            fingerprints.insert(dir.to_string(), session_index_fingerprint(dir));
+        }
         *cache = Some(SessionsCache {
             dir: dir.to_string(),
             cached_at: Instant::now(),
@@ -343,6 +377,14 @@ impl AppState {
             data: data.to_string(),
         });
     }
+}
+
+fn session_index_fingerprint(sessions_dir: &str) -> SessionIndexFingerprint {
+    let path = std::path::Path::new(sessions_dir)
+        .parent()?
+        .join("session_index.jsonl");
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
 }
 
 #[cfg(test)]
@@ -388,6 +430,7 @@ mod tests {
                     model: None,
                     cli_version: None,
                     thread_name: None,
+                    last_user_message: None,
                     turn_count: 0,
                     start_time: String::new(),
                     end_time: None,
@@ -438,6 +481,7 @@ mod tests {
                     model: None,
                     cli_version: None,
                     thread_name: None,
+                    last_user_message: None,
                     turn_count: 0,
                     start_time: String::new(),
                     end_time: None,
@@ -534,5 +578,47 @@ mod tests {
                 .map(|session| session.last_activity_time.as_str()),
             Some("2026-08-18T12:00:02Z")
         );
+    }
+
+    #[test]
+    fn reconciliation_merges_an_appended_session_index_name_without_rescanning_rollouts() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        let day_dir = sessions_dir.join("2026/08/20");
+        std::fs::create_dir_all(&day_dir).unwrap();
+        std::fs::write(
+            day_dir.join("rollout-rename.jsonl"),
+            r#"{"timestamp":"2026-08-20T10:00:00Z","type":"session_meta","payload":{"id":"rename-session","timestamp":"2026-08-20T10:00:00Z"}}"#,
+        )
+        .unwrap();
+        let index_path = dir.path().join("session_index.jsonl");
+        std::fs::write(
+            &index_path,
+            r#"{"id":"rename-session","thread_name":"First name","updated_at":"2026-08-20T10:01:00Z"}
+"#,
+        )
+        .unwrap();
+
+        let state = make_state();
+        let sessions_dir_str = sessions_dir.to_str().unwrap();
+        let initial = state.discover_sessions_cached(sessions_dir_str).unwrap();
+        assert_eq!(initial[0].thread_name.as_deref(), Some("First name"));
+
+        let mut index = std::fs::OpenOptions::new()
+            .append(true)
+            .open(index_path)
+            .unwrap();
+        writeln!(
+            index,
+            r#"{{"id":"rename-session","thread_name":"Latest name","updated_at":"2026-08-20T10:02:00Z"}}"#
+        )
+        .unwrap();
+
+        let reconciliation = state.reconcile_sessions_dir(sessions_dir_str).unwrap();
+        assert!(reconciliation.picker_metadata_changed);
+        assert!(!reconciliation.structure_changed);
+
+        let refreshed = state.discover_sessions_cached(sessions_dir_str).unwrap();
+        assert_eq!(refreshed[0].thread_name.as_deref(), Some("Latest name"));
     }
 }

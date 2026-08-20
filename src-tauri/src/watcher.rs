@@ -203,6 +203,7 @@ async fn reconcile_picker_activity(
     };
 
     let structure_changed = result.structure_changed;
+    let picker_metadata_changed = result.picker_metadata_changed;
     for update in result.updates {
         if let Ok(json) = serde_json::to_string(&update) {
             state.broadcast("session-activity", &json);
@@ -212,10 +213,12 @@ async fn reconcile_picker_activity(
         }
     }
 
-    if structure_changed {
-        // A structural change requires fresh picker metadata. Ordinary appends are represented by
-        // session-activity events and never cause the frontend to rescan every transcript.
-        state.invalidate_sessions_cache();
+    if structure_changed || picker_metadata_changed {
+        // A structural change requires a full rescan. Session-index updates are already merged
+        // into the cached picker rows by reconciliation, so rename does not reread transcripts.
+        if structure_changed {
+            state.invalidate_sessions_cache();
+        }
         state.broadcast("picker-refresh", "{}");
         if let Some(app_handle) = app {
             let _ = app_handle.emit("picker-refresh", serde_json::json!({}));

@@ -13,12 +13,13 @@ function makeSession(
   return {
     id: name,
     path: `/sessions/2026/08/18/rollout-${name}.jsonl`,
-    cwd: `/workspace/${name}`,
+    cwd: "/workspace/project",
     git_branch: "main",
     originator: null,
     model: "gpt-5",
     cli_version: null,
     thread_name: name,
+    last_user_message: null,
     turn_count: 1,
     start_time: startTime,
     end_time: null,
@@ -48,6 +49,8 @@ const defaultProps = {
   onSelectSession: vi.fn(),
   onSearchChange: vi.fn(),
   onSessionFilterChange: vi.fn(),
+  groupMode: "directory" as const,
+  onGroupModeChange: vi.fn(),
 };
 
 describe("SessionPicker", () => {
@@ -141,5 +144,42 @@ describe("SessionPicker", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Recent" }));
     expect(onSessionFilterChange).toHaveBeenCalledWith("recent");
+  });
+
+  it("shows the latest user message with the complete text in a tooltip", () => {
+    const message = "A user request that is long enough to be visually truncated by the row";
+    const session = {
+      ...makeSession("message-session", false),
+      thread_name: null,
+      last_user_message: message,
+    };
+
+    render(<SessionPicker {...defaultProps} sessions={[session]} />);
+
+    expect(screen.getByText(message)).toHaveAttribute("title", message);
+  });
+
+  it("groups sessions by directory and exposes the full path", () => {
+    const first = { ...makeSession("first", false), cwd: "/workspace/project-a" };
+    const second = { ...makeSession("second", false), cwd: "/workspace/project-b" };
+
+    render(<SessionPicker {...defaultProps} sessions={[first, second]} />);
+
+    expect(screen.getByText("project-a")).toHaveAttribute("title", "/workspace/project-a");
+    expect(screen.getByText("project-b")).toHaveAttribute("title", "/workspace/project-b");
+  });
+
+  it("notifies the parent when date grouping is selected", () => {
+    const onGroupModeChange = vi.fn();
+    render(
+      <SessionPicker
+        {...defaultProps}
+        onGroupModeChange={onGroupModeChange}
+        sessions={[makeSession("session", false)]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Group by date" }));
+    expect(onGroupModeChange).toHaveBeenCalledWith("date");
   });
 });

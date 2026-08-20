@@ -89,7 +89,7 @@ downloads the independently published single-file frontend when it starts.
 ```bash
 docker build -t codex-trace .
 docker run --rm -p 1422:1422 \
-  -v "$HOME/.codex/sessions:/home/app/.codex/sessions:ro" \
+  -v "$HOME/.codex:/home/app/.codex:ro" \
   codex-trace
 # then open http://localhost:1422
 ```
@@ -108,7 +108,8 @@ Codex Trace reads session files from this default path:
 ~/.codex/sessions/YYYY/MM/DD/rollout-{ISO_TIMESTAMP}-{UUID}.jsonl
 ```
 
-The sidebar reflects the folder structure exactly. Date groups in `YYYY/MM/DD` format can be collapsed and expanded, with Codex CLI sessions shown underneath.
+Sessions are grouped by working directory by default. Use the directory/date control to switch to
+activity-date groups; either group type can be collapsed and expanded.
 
 ## Configuration
 
@@ -129,6 +130,7 @@ Environment variables for headless and Docker mode:
 | `CODEXTRACE_STATIC_DIR`     | —                         | Directory for the downloaded UI               |
 | `CODEXTRACE_FRONTEND_URL`   | `frontend-latest` release | Single-file frontend download URL             |
 | `CODEXTRACE_FRONTEND_PROXY` | —                         | HTTP(S) proxy used only for frontend download |
+| `CODEX_HOME_DIR`            | `$HOME/.codex`            | Host Codex home mounted by Docker Compose     |
 
 In Docker/web mode, open Settings and select **Update Frontend** to download the configured HTML
 again. The backend validates and replaces `index.html`; the browser reloads after a successful

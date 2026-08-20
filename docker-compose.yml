@@ -15,7 +15,7 @@ services:
       CODEXTRACE_FRONTEND_URL: ${CODEXTRACE_FRONTEND_URL:-https://github.com/starofkuku/codex-trace/releases/download/frontend-latest/codex-trace-frontend.html}
       CODEXTRACE_FRONTEND_PROXY: ${CODEXTRACE_FRONTEND_PROXY:-}
     volumes:
-      - "${CODEX_SESSIONS_DIR:-${HOME}/.codex/sessions}:/home/app/.codex/sessions:ro"
+      - "${CODEX_HOME_DIR:-${HOME}/.codex}:/home/app/.codex:ro"
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/1422"]
       interval: 30s

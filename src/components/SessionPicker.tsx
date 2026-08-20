@@ -1,47 +1,43 @@
 import { useRef, useMemo } from "react";
 import type { CodexSessionInfo } from "../../shared/types";
-import { formatTokens, truncate } from "../../shared/format";
+import { formatTokens } from "../../shared/format";
 import { shortModel, formatExactTime } from "../lib/format";
-import { filterSessions, sessionActivityDateGroup, type SessionFilter } from "../lib/sessionFilter";
+import { filterSessions, type SessionFilter } from "../lib/sessionFilter";
+import { groupSessions, type SessionGroupMode } from "../lib/sessionGrouping";
 import { sessionDisplayName } from "../lib/sessionDisplay";
 import { getModelColor } from "../lib/theme";
 import { OngoingDots } from "./OngoingDots";
 import { useScrollToSelected } from "../hooks/useScrollToSelected";
 import { TokensIcon, ForwardIcon } from "./Icons";
 import { VscTerminal } from "react-icons/vsc";
+import { SessionGroupToggle } from "./SessionGroupToggle";
 
 interface SessionPickerProps {
   sessions: CodexSessionInfo[];
   loading: boolean;
   searchQuery: string;
   sessionFilter: SessionFilter;
+  groupMode?: SessionGroupMode;
   selectedIndex: number;
   onSelectSession: (info: CodexSessionInfo) => void;
   onSearchChange: (q: string) => void;
   onSessionFilterChange: (filter: SessionFilter) => void;
+  onGroupModeChange?: (mode: SessionGroupMode) => void;
 }
 
-function groupByDate(
-  sessions: CodexSessionInfo[],
-): Array<{ category: string; items: CodexSessionInfo[] }> {
-  const map = new Map<string, CodexSessionInfo[]>();
-  for (const s of sessions) {
-    const key = sessionActivityDateGroup(s);
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push(s);
-  }
-  return Array.from(map.entries()).map(([category, items]) => ({ category, items }));
-}
+const NOOP_GROUP_MODE_CHANGE = () => {};
 
 export function SessionPicker({
   sessions,
   loading,
   searchQuery,
   sessionFilter,
+  groupMode = "directory",
   selectedIndex,
   onSelectSession,
   onSearchChange,
   onSessionFilterChange,
+  onGroupModeChange = NOOP_GROUP_MODE_CHANGE,
 }: SessionPickerProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -56,7 +52,7 @@ export function SessionPicker({
     [visibleSessions],
   );
 
-  const dateGroups = groupByDate(visibleSessions);
+  const groups = groupSessions(visibleSessions, groupMode);
   let flatIndex = 0;
 
   return (
@@ -71,31 +67,34 @@ export function SessionPicker({
               </span>
             )}
           </div>
-          <div className="picker__filter" role="group" aria-label="Session filter">
-            <button
-              type="button"
-              className={`picker__filter-btn${sessionFilter === "all" ? " picker__filter-btn--active" : ""}`}
-              aria-pressed={sessionFilter === "all"}
-              onClick={() => onSessionFilterChange("all")}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              className={`picker__filter-btn${sessionFilter === "active" ? " picker__filter-btn--active" : ""}`}
-              aria-pressed={sessionFilter === "active"}
-              onClick={() => onSessionFilterChange("active")}
-            >
-              Active
-            </button>
-            <button
-              type="button"
-              className={`picker__filter-btn${sessionFilter === "recent" ? " picker__filter-btn--active" : ""}`}
-              aria-pressed={sessionFilter === "recent"}
-              onClick={() => onSessionFilterChange("recent")}
-            >
-              Recent
-            </button>
+          <div className="picker__controls">
+            <SessionGroupToggle mode={groupMode} onChange={onGroupModeChange} />
+            <div className="picker__filter" role="group" aria-label="Session filter">
+              <button
+                type="button"
+                className={`picker__filter-btn${sessionFilter === "all" ? " picker__filter-btn--active" : ""}`}
+                aria-pressed={sessionFilter === "all"}
+                onClick={() => onSessionFilterChange("all")}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                className={`picker__filter-btn${sessionFilter === "active" ? " picker__filter-btn--active" : ""}`}
+                aria-pressed={sessionFilter === "active"}
+                onClick={() => onSessionFilterChange("active")}
+              >
+                Active
+              </button>
+              <button
+                type="button"
+                className={`picker__filter-btn${sessionFilter === "recent" ? " picker__filter-btn--active" : ""}`}
+                aria-pressed={sessionFilter === "recent"}
+                onClick={() => onSessionFilterChange("recent")}
+              >
+                Recent
+              </button>
+            </div>
           </div>
         </div>
         <input
@@ -124,14 +123,17 @@ export function SessionPicker({
           </div>
         )}
 
-        {dateGroups.map((group) => (
-          <div key={group.category}>
-            <div className="picker__group-header">{group.category}</div>
+        {groups.map((group) => (
+          <div key={group.key}>
+            <div className="picker__group-header" title={group.title}>
+              {group.label}
+            </div>
             {group.items.map((s) => {
               const idx = flatIndex++;
               const isSelected = idx === selectedIndex;
               const model = shortModel(s.model ?? "");
               const modelClr = s.model ? getModelColor(s.model) : undefined;
+              const displayName = sessionDisplayName(s);
 
               return (
                 <div
@@ -149,8 +151,8 @@ export function SessionPicker({
                     <span className="picker__session-icon">
                       <VscTerminal />
                     </span>
-                    <span className="picker__session-preview">
-                      {truncate(sessionDisplayName(s), 80)}
+                    <span className="picker__session-preview" title={displayName}>
+                      {displayName}
                     </span>
                     {s.is_ongoing && (
                       <span className="picker__session-ongoing">

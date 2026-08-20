@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../lib/invoke";
 import type { CodexSessionInfo, SessionActivityUpdate, SettingsResponse } from "../../shared/types";
 import { filterSessions, type SessionFilter } from "../lib/sessionFilter";
+import { sessionDisplayName } from "../lib/sessionDisplay";
 import { useTauriEvent } from "./useTauriEvent";
 
 interface PickerState {
@@ -47,7 +48,13 @@ export function usePicker() {
   }, []);
 
   const updateSessionActivity = useCallback(
-    (path: string, ongoing: boolean, fileSizeBytes?: number, lastActivityTime?: string) => {
+    (
+      path: string,
+      ongoing: boolean,
+      fileSizeBytes?: number,
+      lastActivityTime?: string,
+      lastUserMessage?: string | null,
+    ) => {
       setState((prev) => {
         const idx = prev.sessions.findIndex((s) => s.path === path);
         if (idx === -1) return prev;
@@ -55,7 +62,8 @@ export function usePicker() {
         if (
           current.is_ongoing === ongoing &&
           (fileSizeBytes === undefined || current.file_size_bytes === fileSizeBytes) &&
-          (lastActivityTime === undefined || current.last_activity_time === lastActivityTime)
+          (lastActivityTime === undefined || current.last_activity_time === lastActivityTime) &&
+          (lastUserMessage === undefined || current.last_user_message === lastUserMessage)
         ) {
           return prev;
         }
@@ -65,6 +73,7 @@ export function usePicker() {
           is_ongoing: ongoing,
           ...(lastActivityTime === undefined ? {} : { last_activity_time: lastActivityTime }),
           ...(fileSizeBytes === undefined ? {} : { file_size_bytes: fileSizeBytes }),
+          ...(lastUserMessage === undefined ? {} : { last_user_message: lastUserMessage }),
         };
         return { ...prev, sessions };
       });
@@ -83,6 +92,7 @@ export function usePicker() {
       update.is_ongoing,
       update.file_size_bytes,
       update.last_activity_time,
+      update.last_user_message,
     );
   });
 
@@ -108,7 +118,7 @@ export function usePicker() {
   const filteredSessions = state.searchQuery
     ? visibleSessions.filter(
         (s) =>
-          (s.thread_name ?? "").toLowerCase().includes(state.searchQuery.toLowerCase()) ||
+          sessionDisplayName(s).toLowerCase().includes(state.searchQuery.toLowerCase()) ||
           s.id.toLowerCase().includes(state.searchQuery.toLowerCase()) ||
           (s.cwd ?? "").toLowerCase().includes(state.searchQuery.toLowerCase()),
       )

@@ -15,6 +15,8 @@ import { ViewToolbar } from "./components/ViewToolbar";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { SidebarToggle } from "./components/SidebarToggle";
 import { SettingsModal } from "./components/SettingsModal";
+import { SessionGroupToggle } from "./components/SessionGroupToggle";
+import { flattenSessionGroups, groupSessions, type SessionGroupMode } from "./lib/sessionGrouping";
 
 const DEFAULT_SIDEBAR_WIDTH = 260;
 const COLLAPSED_SIDEBAR_WIDTH = 36;
@@ -39,7 +41,8 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
+  const [sessionGroupMode, setSessionGroupMode] = useState<SessionGroupMode>("directory");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [workerPanelWidth, setWorkerPanelWidth] = useState(380);
   const [workerPanelCallId, setWorkerPanelCallId] = useState<string | null>(null);
 
@@ -103,14 +106,24 @@ export function App() {
     }
   }, [loadMore, session.session?.pagination?.direction]);
 
-  const handleToggleDate = useCallback((dateGroup: string) => {
-    setCollapsedDates((prev) => {
+  const handleToggleGroup = useCallback((groupKey: string) => {
+    setCollapsedGroups((prev) => {
       const next = new Set(prev);
-      if (next.has(dateGroup)) next.delete(dateGroup);
-      else next.add(dateGroup);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
       return next;
     });
   }, []);
+
+  const handleGroupModeChange = useCallback((mode: SessionGroupMode) => {
+    setSessionGroupMode(mode);
+    setPickerSelected(0);
+  }, []);
+
+  const pickerNavigationSessions = useMemo(
+    () => flattenSessionGroups(groupSessions(picker.sessions, sessionGroupMode)),
+    [picker.sessions, sessionGroupMode],
+  );
 
   const turns = session.session?.turns ?? [];
   const selectedTurnData = turns[selectedTurn];
@@ -157,7 +170,8 @@ export function App() {
   useKeyboard({
     j: () => {
       if (view === "list") setSelectedTurn((i) => Math.min(i + 1, turns.length - 1));
-      if (view === "picker") setPickerSelected((i) => Math.min(i + 1, picker.sessions.length - 1));
+      if (view === "picker")
+        setPickerSelected((i) => Math.min(i + 1, pickerNavigationSessions.length - 1));
     },
     k: () => {
       if (view === "list") setSelectedTurn((i) => Math.max(i - 1, 0));
@@ -165,8 +179,8 @@ export function App() {
     },
     Enter: () => {
       if (view === "list" && turns.length > 0) handleOpenDetail(selectedTurn);
-      if (view === "picker" && picker.sessions.length > 0)
-        handleSelectSession(picker.sessions[pickerSelected]);
+      if (view === "picker" && pickerNavigationSessions.length > 0)
+        handleSelectSession(pickerNavigationSessions[pickerSelected]);
     },
     Escape: () => {
       if (workerPanelCallId) {
@@ -216,15 +230,25 @@ export function App() {
         >
           <div className="app__sidebar-header">
             <span className="app__sidebar-title">SESSIONS</span>
-            <SidebarToggle collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
+            <div className="app__sidebar-actions">
+              {!sidebarCollapsed && (
+                <SessionGroupToggle
+                  mode={sessionGroupMode}
+                  compact
+                  onChange={handleGroupModeChange}
+                />
+              )}
+              <SidebarToggle collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
+            </div>
           </div>
           {!sidebarCollapsed && (
             <SidebarTree
               sessions={picker.allSessions}
               selectedPath={session.sessionPath || null}
-              collapsedDates={collapsedDates}
+              groupMode={sessionGroupMode}
+              collapsedDates={collapsedGroups}
               onSelectSession={handleSelectSession}
-              onToggleDate={handleToggleDate}
+              onToggleDate={handleToggleGroup}
             />
           )}
         </div>
@@ -235,14 +259,16 @@ export function App() {
         <div className="main-content">
           {view === "picker" && (
             <SessionPicker
-              sessions={picker.sessions}
+              sessions={pickerNavigationSessions}
               loading={picker.loading}
               searchQuery={picker.searchQuery}
               sessionFilter={picker.sessionFilter}
+              groupMode={sessionGroupMode}
               selectedIndex={pickerSelected}
               onSelectSession={handleSelectSession}
               onSearchChange={picker.setSearchQuery}
               onSessionFilterChange={picker.setSessionFilter}
+              onGroupModeChange={handleGroupModeChange}
             />
           )}
 

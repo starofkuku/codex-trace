@@ -323,6 +323,8 @@ export interface CodexSessionInfo {
   model: string | null;
   cli_version: string | null;
   thread_name: string | null;
+  /** Latest user-authored message; absent when connected to an older backend. */
+  last_user_message?: string | null;
   turn_count: number;
   start_time: string;
   end_time: string | null;
@@ -367,6 +369,7 @@ export interface SessionActivityUpdate {
   is_ongoing: boolean;
   last_activity_time: string;
   file_size_bytes: number;
+  last_user_message: string | null;
 }
 
 export interface SettingsResponse {

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use super::compression::resolve_rollout_path;
-use super::discover::{scan_session_file, CodexSessionInfo};
+use super::discover::{scan_session_file, user_message_from_payload, CodexSessionInfo};
 use super::entry::{event_msg_type, RawEntry};
 
 /// A session whose file has not been written recently cannot still be actively processing.
@@ -31,6 +31,7 @@ pub struct ActivitySnapshot {
     pub is_ongoing: bool,
     pub last_activity_time: String,
     pub file_size_bytes: u64,
+    pub last_user_message: Option<String>,
 }
 
 /// Incremental activity-only parser for one rollout file.
@@ -47,6 +48,7 @@ pub struct ActivityTracker {
     has_session_end: bool,
     is_ongoing: bool,
     last_activity_time: String,
+    last_user_message: Option<String>,
     fingerprint: FileFingerprint,
 }
 
@@ -77,6 +79,7 @@ impl ActivityTracker {
             has_session_end: info.has_session_end,
             is_ongoing: info.is_ongoing,
             last_activity_time: info.last_activity_time.clone(),
+            last_user_message: info.last_user_message.clone(),
             fingerprint,
         }
     }
@@ -106,6 +109,7 @@ impl ActivityTracker {
             is_ongoing: self.is_ongoing,
             last_activity_time: self.last_activity_time.clone(),
             file_size_bytes: self.fingerprint.size,
+            last_user_message: self.last_user_message.clone(),
         }
     }
 
@@ -206,6 +210,9 @@ impl ActivityTracker {
     fn process_entry(&mut self, entry: &RawEntry) {
         if let Some(timestamp) = entry.timestamp.as_deref().filter(|value| !value.is_empty()) {
             self.last_activity_time = timestamp.to_string();
+        }
+        if let Some(message) = user_message_from_payload(&entry.entry_type, &entry.payload) {
+            self.last_user_message = Some(message);
         }
 
         match entry.entry_type.as_str() {
@@ -338,6 +345,27 @@ mod tests {
         assert!(!snapshot.is_ongoing);
         assert_eq!(snapshot.last_activity_time, "2026-08-18T12:00:02Z");
         assert!(snapshot.file_size_bytes > initial_size);
+    }
+
+    #[test]
+    fn refresh_captures_an_appended_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout-user-message.jsonl");
+        std::fs::write(&path, session_prefix()).unwrap();
+        let mut tracker = ActivityTracker::load(&path).unwrap();
+
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"2026-08-18T12:00:02Z","type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"UserMessage","content":[{{"type":"text","text":"Newest request"}}]}}}}}}"#
+        )
+        .unwrap();
+
+        let snapshot = tracker.refresh().unwrap();
+        assert_eq!(
+            snapshot.last_user_message.as_deref(),
+            Some("Newest request")
+        );
     }
 
     #[test]

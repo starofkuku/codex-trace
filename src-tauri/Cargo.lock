@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "codex-trace"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "axum",
  "chrono",

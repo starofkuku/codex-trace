@@ -1,5 +1,4 @@
 import type { CodexSessionInfo } from "../../shared/types";
-import { shortPath } from "../../shared/format";
 
 export function sessionDisplayName(session: CodexSessionInfo): string {
   if (session.is_inline_worker || session.is_external_worker) {
@@ -9,7 +8,7 @@ export function sessionDisplayName(session: CodexSessionInfo): string {
     return `worker ${shortId}`;
   }
 
-  if (session.thread_name) return session.thread_name;
-  if (session.cwd) return shortPath(session.cwd);
+  if (session.thread_name?.trim()) return session.thread_name.trim();
+  if (session.last_user_message?.trim()) return session.last_user_message.trim();
   return session.id.slice(0, 8);
 }

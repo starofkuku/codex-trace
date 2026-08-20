@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::io::BufRead;
 use std::path::Path;
@@ -20,6 +21,8 @@ pub struct CodexSessionInfo {
     pub model: Option<String>,
     pub cli_version: Option<String>,
     pub thread_name: Option<String>,
+    /// Most recent user-authored message in the rollout.
+    pub last_user_message: Option<String>,
     pub turn_count: u32,
     pub start_time: String,
     pub end_time: Option<String>,
@@ -102,6 +105,10 @@ pub fn discover_sessions(sessions_dir: &Path) -> Result<Vec<CodexSessionInfo>, S
     let mut infos: Vec<CodexSessionInfo> = Vec::new();
     collect_jsonl_files(sessions_dir, &mut infos)?;
 
+    // Current Codex persists `/rename` outside rollout files. Read the append-only index once
+    // per discovery and let its latest entry override legacy in-rollout rename events.
+    apply_session_index(sessions_dir, &mut infos);
+
     // Sort newest first (ISO timestamp in filename is lexicographically sortable)
     infos.sort_by(|a, b| {
         let fa = Path::new(&a.path)
@@ -128,6 +135,39 @@ pub fn discover_sessions(sessions_dir: &Path) -> Result<Vec<CodexSessionInfo>, S
     }
 
     Ok(infos)
+}
+
+pub(crate) fn apply_session_index(sessions_dir: &Path, infos: &mut [CodexSessionInfo]) {
+    let indexed_names = read_session_index(sessions_dir);
+    for info in infos {
+        if let Some(name) = indexed_names.get(&info.id) {
+            info.thread_name = (!name.trim().is_empty()).then(|| name.clone());
+        }
+    }
+}
+
+fn read_session_index(sessions_dir: &Path) -> HashMap<String, String> {
+    let Some(codex_home) = sessions_dir.parent() else {
+        return HashMap::new();
+    };
+    let Ok(file) = fs::File::open(codex_home.join("session_index.jsonl")) else {
+        return HashMap::new();
+    };
+
+    let mut names = HashMap::new();
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(thread_name) = entry.get("thread_name").and_then(Value::as_str) else {
+            continue;
+        };
+        names.insert(id.to_string(), thread_name.to_string());
+    }
+    names
 }
 
 fn collect_jsonl_files(dir: &Path, infos: &mut Vec<CodexSessionInfo>) -> Result<(), String> {
@@ -331,6 +371,7 @@ pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
     let mut turn_count: u32 = 0;
     let mut model: Option<String> = None;
     let mut thread_name: Option<String> = None;
+    let mut last_user_message: Option<String> = None;
     let mut total_tokens: Option<u64> = None;
     let mut end_time: Option<String> = None;
     let mut spawned_worker_ids: Vec<String> = Vec::new();
@@ -351,6 +392,12 @@ pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
         };
         if let Some(timestamp) = v.get("timestamp").and_then(|value| value.as_str()) {
             last_activity_time = timestamp.to_string();
+        }
+        if let Some(message) = user_message_from_payload(
+            v.get("type").and_then(Value::as_str).unwrap_or(""),
+            v.get("payload").unwrap_or(&Value::Null),
+        ) {
+            last_user_message = Some(message);
         }
 
         let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -566,6 +613,7 @@ pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
         model,
         cli_version,
         thread_name,
+        last_user_message,
         turn_count,
         start_time,
         end_time,
@@ -586,6 +634,43 @@ pub(crate) fn scan_session_file(path: &Path) -> Option<CodexSessionInfo> {
         file_size_bytes,
         has_session_end,
     })
+}
+
+pub(crate) fn user_message_from_payload(entry_type: &str, payload: &Value) -> Option<String> {
+    let message = match entry_type {
+        "event_msg" => match payload.get("type").and_then(Value::as_str) {
+            Some("user_message") => payload.get("message").map(content_text),
+            Some("item_completed") => {
+                let item = payload.get("item")?;
+                match item.get("type").and_then(Value::as_str) {
+                    Some("UserMessage" | "user_message") => item.get("content").map(content_text),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        "response_item" => match payload.get("type").and_then(Value::as_str) {
+            Some("user_turn" | "user_input") => payload.get("content").map(content_text),
+            Some("user_input_with_turn_context") => payload.get("input").map(content_text),
+            _ => None,
+        },
+        _ => None,
+    }?;
+
+    (!message.trim().is_empty()).then_some(message)
+}
+
+fn content_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(""),
+        Value::Object(object) => object.get("content").map(content_text).unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 fn worker_metadata(payload: &Value) -> (Option<String>, Option<String>) {
@@ -1849,5 +1934,54 @@ mod tests {
             .find(|s| s.id == "v0147-section")
             .expect("session must be discovered even with an unrecognized section field");
         assert_eq!(session.cli_version.as_deref(), Some("0.147.0"));
+    }
+
+    #[test]
+    fn discover_sessions_uses_latest_name_from_session_index() {
+        let tmp = tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let day_dir = sessions_dir.join("2026/08/20");
+        std::fs::create_dir_all(&day_dir).unwrap();
+        std::fs::write(
+            day_dir.join("rollout-2026-08-20T09-00-00-renamed.jsonl"),
+            r#"{"timestamp":"2026-08-20T09:00:00Z","type":"session_meta","payload":{"id":"renamed-session","timestamp":"2026-08-20T09:00:00Z","cwd":"/workspace/project"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("session_index.jsonl"),
+            [
+                r#"{"id":"renamed-session","thread_name":"Old name","updated_at":"2026-08-20T09:01:00Z"}"#,
+                "not-json",
+                r#"{"id":"renamed-session","thread_name":"Latest name","updated_at":"2026-08-20T09:02:00Z"}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let sessions = discover_sessions(&sessions_dir).unwrap();
+        assert_eq!(sessions[0].thread_name.as_deref(), Some("Latest name"));
+    }
+
+    #[test]
+    fn discover_sessions_keeps_latest_user_message_across_rollout_formats() {
+        let tmp = tempdir().unwrap();
+        let day_dir = tmp.path().join("2026/08/20");
+        std::fs::create_dir_all(&day_dir).unwrap();
+        std::fs::write(
+            day_dir.join("rollout-2026-08-20T10-00-00-messages.jsonl"),
+            [
+                r#"{"timestamp":"2026-08-20T10:00:00Z","type":"session_meta","payload":{"id":"message-session","timestamp":"2026-08-20T10:00:00Z"}}"#,
+                r#"{"timestamp":"2026-08-20T10:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Older request"}}"#,
+                r#"{"timestamp":"2026-08-20T10:00:02Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Latest "},{"type":"text","text":"request"}]}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let sessions = discover_sessions(tmp.path()).unwrap();
+        assert_eq!(
+            sessions[0].last_user_message.as_deref(),
+            Some("Latest request")
+        );
     }
 }

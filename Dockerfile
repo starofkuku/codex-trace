@@ -9,9 +9,9 @@
 # Build:
 #   docker build -t codex-trace .
 #
-# Run (mount your Codex session data read-only):
+# Run (mount your Codex home read-only so session_index.jsonl is available):
 #   docker run --rm -p 1422:1422 \
-#     -v "$HOME/.codex/sessions:/home/app/.codex/sessions:ro" \
+#     -v "$HOME/.codex:/home/app/.codex:ro" \
 #     codex-trace
 #
 # Then open http://localhost:1422 in a browser.
@@ -86,7 +86,7 @@ ENV CODEXTRACE_HTTP_HOST=0.0.0.0 \
 
 USER app
 
-VOLUME ["/home/app/.codex/sessions"]
+VOLUME ["/home/app/.codex"]
 
 EXPOSE 1422
 

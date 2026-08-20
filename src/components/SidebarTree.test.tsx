@@ -13,6 +13,7 @@ function makeSession(overrides: Partial<CodexSessionInfo> = {}): CodexSessionInf
     model: "gpt-4",
     cli_version: null,
     thread_name: null,
+    last_user_message: "Latest user request",
     turn_count: 3,
     start_time: "2026-04-26T10:00:00Z",
     end_time: null,
@@ -62,7 +63,7 @@ describe("SidebarTree", () => {
     expect(screen.getByText("2026/04/26")).toBeInTheDocument();
   });
 
-  it("renders session label from cwd basename when no thread_name", () => {
+  it("renders the latest user message when no thread_name exists", () => {
     render(
       <SidebarTree
         sessions={[makeSession()]}
@@ -72,7 +73,7 @@ describe("SidebarTree", () => {
         onToggleDate={vi.fn()}
       />,
     );
-    expect(screen.getByText("myproject")).toBeInTheDocument();
+    expect(screen.getByText("Latest user request")).toHaveAttribute("title", "Latest user request");
   });
 
   it("renders the session file size", () => {
@@ -101,10 +102,10 @@ describe("SidebarTree", () => {
     expect(screen.getByText("My Task")).toBeInTheDocument();
   });
 
-  it("falls back to id prefix when cwd and thread_name are absent", () => {
+  it("falls back to id prefix when thread_name and user message are absent", () => {
     render(
       <SidebarTree
-        sessions={[makeSession({ cwd: null, thread_name: null })]}
+        sessions={[makeSession({ thread_name: null, last_user_message: null })]}
         selectedPath={null}
         collapsedDates={new Set()}
         onSelectSession={vi.fn()}
@@ -235,7 +236,10 @@ describe("SidebarTree", () => {
     );
 
     expect(
-      Array.from(container.querySelectorAll(".sidebar-tree__date"), (node) => node.textContent),
+      Array.from(
+        container.querySelectorAll(".sidebar-tree__group-label"),
+        (node) => node.textContent,
+      ),
     ).toEqual(["2026/08/20", "2026/08/19"]);
     expect(
       Array.from(
@@ -313,5 +317,35 @@ describe("SidebarTree", () => {
       />,
     );
     expect(screen.getByText("worker")).toBeInTheDocument();
+  });
+
+  it("groups sessions by directory when requested", () => {
+    render(
+      <SidebarTree
+        sessions={[
+          makeSession({ thread_name: "First", cwd: "/workspace/project-a" }),
+          makeSession({
+            id: "second",
+            path: "/second.jsonl",
+            thread_name: "Second",
+            cwd: "/workspace/project-b",
+          }),
+        ]}
+        selectedPath={null}
+        groupMode="directory"
+        collapsedDates={new Set()}
+        onSelectSession={vi.fn()}
+        onToggleDate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("project-a").closest("[title]"))?.toHaveAttribute(
+      "title",
+      "/workspace/project-a",
+    );
+    expect(screen.getByText("project-b").closest("[title]"))?.toHaveAttribute(
+      "title",
+      "/workspace/project-b",
+    );
   });
 });
