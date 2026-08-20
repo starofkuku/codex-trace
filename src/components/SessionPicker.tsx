@@ -11,6 +11,7 @@ import { useScrollToSelected } from "../hooks/useScrollToSelected";
 import { TokensIcon, ForwardIcon } from "./Icons";
 import { VscTerminal } from "react-icons/vsc";
 import { SessionGroupToggle } from "./SessionGroupToggle";
+import { SubagentMarker } from "./SubagentMarker";
 
 interface SessionPickerProps {
   sessions: CodexSessionInfo[];
@@ -154,6 +155,7 @@ export function SessionPicker({
                     <span className="picker__session-preview" title={displayName}>
                       {displayName}
                     </span>
+                    <SubagentMarker count={s.spawned_worker_ids.length} />
                     {s.is_ongoing && (
                       <span className="picker__session-ongoing">
                         <OngoingDots count={1} />
@@ -183,21 +185,6 @@ export function SessionPicker({
                     {(s.total_tokens ?? 0) > 0 && (
                       <span className="picker__session-stat">
                         {formatTokens(s.total_tokens!)} tok
-                      </span>
-                    )}
-                    {s.spawned_worker_ids.length > 0 && (
-                      <span className="picker__session-badge picker__session-badge--collab">
-                        +{s.spawned_worker_ids.length} workers
-                      </span>
-                    )}
-                    {s.is_external_worker && (
-                      <span className="picker__session-badge picker__session-badge--external-worker">
-                        worker
-                      </span>
-                    )}
-                    {s.is_inline_worker && (
-                      <span className="picker__session-badge picker__session-badge--inline-worker">
-                        inline worker
                       </span>
                     )}
                     <span className="picker__session-time">

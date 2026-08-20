@@ -106,6 +106,60 @@ describe("TurnList", () => {
     expect(screen.getByText("Hi there!")).toBeInTheDocument();
   });
 
+  it("shows user messages expanded and Codex messages collapsed by default", () => {
+    render(<TurnList turns={[makeTurn()]} selectedIndex={-1} onSelectTurn={vi.fn()} />);
+
+    const userMessage = screen.getByText("Hello Codex");
+    const codexMessage = screen.getByText("Hi there!");
+    expect(userMessage).not.toHaveClass("message__content--collapsed");
+    expect(codexMessage).toHaveClass("message__content--collapsed");
+
+    fireEvent.click(userMessage.closest(".message--user")!);
+    expect(userMessage).toHaveClass("message__content--collapsed");
+  });
+
+  it("marks a turn that spawned a subagent", () => {
+    render(
+      <TurnList
+        turns={[
+          makeTurn({
+            collab_spawns: [
+              {
+                call_id: "spawn-1",
+                new_session_id: "worker-1",
+                agent_nickname: "Socrates",
+                agent_role: "worker",
+                model: null,
+                reasoning_effort: null,
+                prompt_preview: "Review the implementation",
+              },
+            ],
+          }),
+        ]}
+        selectedIndex={-1}
+        onSelectTurn={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Uses 1 subagent")).toHaveAttribute("title", "Uses 1 subagent");
+  });
+
+  it("marks subagent activity when the worker count is unavailable", () => {
+    render(
+      <TurnList
+        turns={[
+          makeTurn({
+            tool_calls: [{ ...EXEC_TOOL, kind: "wait_agent", name: "wait_agent" }],
+          }),
+        ]}
+        selectedIndex={-1}
+        onSelectTurn={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Uses subagents")).toHaveAttribute("title", "Uses subagents");
+  });
+
   it("shows tool count for a single tool call", () => {
     render(
       <TurnList

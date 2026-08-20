@@ -1,6 +1,7 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { CodexSessionInfo } from "../../shared/types";
 import { formatFileSize, timeAgo } from "../../shared/format";
+import { copyText } from "../lib/copyText";
 import { sessionDisplayName } from "../lib/sessionDisplay";
 import { isPrimarySession } from "../lib/sessionFilter";
 import {
@@ -9,14 +10,21 @@ import {
   type SessionSortOrder,
 } from "../lib/sessionGrouping";
 import { OngoingDots } from "./OngoingDots";
+import { SubagentMarker } from "./SubagentMarker";
+import { VscCheck, VscCopy } from "react-icons/vsc";
+
+const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 
 interface SidebarTreeProps {
   sessions: CodexSessionInfo[];
   selectedPath: string | null;
   groupMode?: SessionGroupMode;
   sortOrder?: SessionSortOrder;
+  selectionMode?: boolean;
+  selectedSessionIds?: ReadonlySet<string>;
   collapsedDates: Set<string>;
   onSelectSession: (info: CodexSessionInfo) => void;
+  onToggleSessionSelection?: (info: CodexSessionInfo) => void;
   onToggleDate: (groupKey: string) => void;
 }
 
@@ -25,10 +33,14 @@ export function SidebarTree({
   selectedPath,
   groupMode = "date",
   sortOrder = "newest",
+  selectionMode = false,
+  selectedSessionIds = EMPTY_SESSION_IDS,
   collapsedDates,
   onSelectSession,
+  onToggleSessionSelection,
   onToggleDate,
 }: SidebarTreeProps) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const primarySessions = useMemo(() => sessions.filter(isPrimarySession), [sessions]);
   const grouped = useMemo(
     () => groupSessions(primarySessions, groupMode, sortOrder),
@@ -42,6 +54,19 @@ export function SidebarTree({
     },
     [onToggleDate],
   );
+
+  const handleCopyId = useCallback(async (session: CodexSessionInfo) => {
+    try {
+      await copyText(session.id);
+      setCopiedId(session.id);
+      window.setTimeout(
+        () => setCopiedId((current) => (current === session.id ? null : current)),
+        1500,
+      );
+    } catch {
+      setCopiedId(null);
+    }
+  }, []);
 
   if (primarySessions.length === 0) {
     return (
@@ -75,6 +100,7 @@ export function SidebarTree({
             {!collapsed &&
               group.items.map((s) => {
                 const isSelected = s.path === selectedPath;
+                const isChecked = selectedSessionIds.has(s.id);
                 const displayName = sessionDisplayName(s);
 
                 return (
@@ -87,22 +113,50 @@ export function SidebarTree({
                     ]
                       .filter(Boolean)
                       .join(" ")}
-                    onClick={() => onSelectSession(s)}
-                    role="button"
-                    tabIndex={0}
+                    onClick={() =>
+                      selectionMode ? onToggleSessionSelection?.(s) : onSelectSession(s)
+                    }
+                    role={selectionMode ? undefined : "button"}
+                    tabIndex={selectionMode ? undefined : 0}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") onSelectSession(s);
+                      if (!selectionMode && e.key === "Enter") onSelectSession(s);
                     }}
                   >
                     <div className="sidebar-tree__session-row">
+                      {selectionMode && (
+                        <input
+                          type="checkbox"
+                          className="sidebar-tree__session-checkbox"
+                          checked={isChecked}
+                          aria-label={`Select session ${s.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => onToggleSessionSelection?.(s)}
+                        />
+                      )}
                       <span className="sidebar-tree__session-label" title={displayName}>
                         {displayName}
                       </span>
+                      <SubagentMarker count={s.spawned_worker_ids.length} />
                       {s.is_ongoing && <OngoingDots count={1} />}
                       <span className="sidebar-tree__size">
                         {formatFileSize(s.file_size_bytes)}
                       </span>
                       <span className="sidebar-tree__time">{timeAgo(s.last_activity_time)}</span>
+                      {!selectionMode && (
+                        <button
+                          type="button"
+                          className={`sidebar-tree__copy-button${copiedId === s.id ? " sidebar-tree__copy-button--copied" : ""}`}
+                          aria-label={copiedId === s.id ? "Copied session ID" : "Copy session ID"}
+                          title={copiedId === s.id ? "Copied session ID" : "Copy session ID"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleCopyId(s);
+                          }}
+                          onKeyDown={(e) => e.stopPropagation()}
+                        >
+                          {copiedId === s.id ? <VscCheck /> : <VscCopy />}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

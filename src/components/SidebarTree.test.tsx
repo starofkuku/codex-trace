@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexSessionInfo } from "../../shared/types";
 import { SidebarTree } from "./SidebarTree";
@@ -129,6 +129,57 @@ describe("SidebarTree", () => {
     );
     fireEvent.click(screen.getByText("My Task").closest('[role="button"]')!);
     expect(onSelect).toHaveBeenCalledWith(session);
+  });
+
+  it("copies the session ID", async () => {
+    const onSelect = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const session = makeSession({ id: "session-uuid" });
+    render(
+      <SidebarTree
+        sessions={[session]}
+        selectedPath={null}
+        collapsedDates={new Set()}
+        onSelectSession={onSelect}
+        onToggleDate={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy session ID" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("session-uuid"));
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Copied session ID" })).toBeInTheDocument();
+  });
+
+  it("shows checkboxes and toggles sessions without opening them in selection mode", () => {
+    const onSelect = vi.fn();
+    const onToggleSelection = vi.fn();
+    const session = makeSession({ id: "session-uuid", thread_name: "Selectable session" });
+    render(
+      <SidebarTree
+        sessions={[session]}
+        selectedPath={null}
+        selectionMode
+        selectedSessionIds={new Set([session.id])}
+        collapsedDates={new Set()}
+        onSelectSession={onSelect}
+        onToggleSessionSelection={onToggleSelection}
+        onToggleDate={vi.fn()}
+      />,
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: "Select session session-uuid" });
+    expect(checkbox).toBeChecked();
+    expect(screen.queryByRole("button", { name: "Copy session ID" })).not.toBeInTheDocument();
+
+    fireEvent.click(checkbox);
+    expect(onToggleSelection).toHaveBeenCalledWith(session);
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("hides sessions when their date group is collapsed", () => {
@@ -279,6 +330,7 @@ describe("SidebarTree", () => {
       />,
     );
     expect(screen.getByText("Parent Session")).toBeInTheDocument();
+    expect(screen.getByLabelText("Uses 1 subagent")).toHaveAttribute("title", "Uses 1 subagent");
     expect(screen.queryByText("Linked Worker")).not.toBeInTheDocument();
     expect(screen.queryByText("Unlinked Worker")).not.toBeInTheDocument();
     expect(screen.queryByText(/workers/)).not.toBeInTheDocument();

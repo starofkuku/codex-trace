@@ -16,6 +16,7 @@ import {
   ThinkingIcon,
 } from "./Icons";
 import { tokenBreakdownTitle } from "./TokenBar";
+import { SubagentMarker } from "./SubagentMarker";
 
 interface TurnListProps {
   turns: CodexTurn[];
@@ -43,12 +44,12 @@ export function TurnList({
 }: TurnListProps) {
   const listRef = useAutoScroll<HTMLDivElement>(turns.length);
   const selectedRef = useScrollToSelected(selectedIndex);
-  const [expandedUsers, setExpandedUsers] = useState<Set<number>>(new Set());
+  const [collapsedUsers, setCollapsedUsers] = useState<Set<number>>(new Set());
   const [expandedCodex, setExpandedCodex] = useState<Set<number>>(new Set());
   const clickTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   const toggleUser = useCallback((i: number) => {
-    setExpandedUsers((prev) => {
+    setCollapsedUsers((prev) => {
       const next = new Set(prev);
       if (next.has(i)) next.delete(i);
       else next.add(i);
@@ -99,7 +100,7 @@ export function TurnList({
       {turns.map((turn, i) => {
         const isSelected = i === selectedIndex;
         const userMsg = turn.user_message ?? "";
-        const userExpanded = expandedUsers.has(i);
+        const userCollapsed = collapsedUsers.has(i);
         const agentPreview =
           turn.error ??
           turn.agent_messages.find((m) => m.phase === "final_answer")?.text ??
@@ -109,6 +110,10 @@ export function TurnList({
           turn.error || turn.agent_messages.length > 0 || turn.tool_calls.length > 0,
         );
         const reasoningCount = turn.agent_messages.filter((m) => m.is_reasoning).length;
+        const subagentCount = turn.collab_spawns.length;
+        const usesSubagents = turn.tool_calls.some((tool) =>
+          ["spawn_agent", "wait_agent", "interrupt_agent", "followup_task"].includes(tool.kind),
+        );
         const userTs = turn.started_at
           ? formatExactTime(new Date(turn.started_at * 1000).toISOString())
           : null;
@@ -143,7 +148,7 @@ export function TurnList({
               </div>
               {userMsg && (
                 <div
-                  className={`message__content${!userExpanded ? " message__content--collapsed" : ""}`}
+                  className={`message__content${userCollapsed ? " message__content--collapsed" : ""}`}
                 >
                   {userMsg}
                 </div>
@@ -165,6 +170,7 @@ export function TurnList({
                   <CodexIcon />
                 </span>
                 <span className="message__role message__role--claude">Codex</span>
+                <SubagentMarker count={subagentCount} active={usesSubagents} />
                 {turn.status === "ongoing" && <OngoingDots />}
                 {hasDetail && (
                   <button

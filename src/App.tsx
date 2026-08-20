@@ -17,6 +17,7 @@ import { SidebarToggle } from "./components/SidebarToggle";
 import { SettingsModal } from "./components/SettingsModal";
 import { SessionGroupToggle } from "./components/SessionGroupToggle";
 import { SidebarDirectoryActions } from "./components/SidebarDirectoryActions";
+import { SidebarBatchCopyButton } from "./components/SidebarBatchCopyButton";
 import {
   flattenSessionGroups,
   groupSessions,
@@ -24,6 +25,7 @@ import {
   type SessionSortOrder,
 } from "./lib/sessionGrouping";
 import { isPrimarySession } from "./lib/sessionFilter";
+import { copyText } from "./lib/copyText";
 
 const DEFAULT_SIDEBAR_WIDTH = 260;
 const COLLAPSED_SIDEBAR_WIDTH = 36;
@@ -51,11 +53,15 @@ export function App() {
   const [sessionGroupMode, setSessionGroupMode] = useState<SessionGroupMode>("directory");
   const [sidebarSortOrder, setSidebarSortOrder] = useState<SessionSortOrder>("newest");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+  const [copyNotice, setCopyNotice] = useState<{ message: string; error: boolean } | null>(null);
   const [workerPanelWidth, setWorkerPanelWidth] = useState(380);
   const [workerPanelCallId, setWorkerPanelCallId] = useState<string | null>(null);
 
   const session = useSession();
   const picker = usePicker();
+  const copyNoticeTimerRef = useRef<number | null>(null);
   const {
     set: expandedTools,
     toggle: toggleTool,
@@ -122,6 +128,54 @@ export function App() {
       return next;
     });
   }, []);
+
+  const showCopyNotice = useCallback((message: string, error = false) => {
+    if (copyNoticeTimerRef.current !== null) window.clearTimeout(copyNoticeTimerRef.current);
+    setCopyNotice({ message, error });
+    copyNoticeTimerRef.current = window.setTimeout(() => {
+      setCopyNotice(null);
+      copyNoticeTimerRef.current = null;
+    }, 2200);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (copyNoticeTimerRef.current !== null) window.clearTimeout(copyNoticeTimerRef.current);
+    },
+    [],
+  );
+
+  const handleToggleSessionSelection = useCallback((info: CodexSessionInfo) => {
+    setSelectedSessionIds((current) => {
+      const next = new Set(current);
+      if (next.has(info.id)) next.delete(info.id);
+      else next.add(info.id);
+      return next;
+    });
+  }, []);
+
+  const handleBatchCopy = useCallback(async () => {
+    if (!sidebarSelectionMode) {
+      setSelectedSessionIds(new Set());
+      setSidebarSelectionMode(true);
+      return;
+    }
+
+    if (selectedSessionIds.size === 0) {
+      setSidebarSelectionMode(false);
+      return;
+    }
+
+    try {
+      await copyText(Array.from(selectedSessionIds).join("\n"));
+      const count = selectedSessionIds.size;
+      setSelectedSessionIds(new Set());
+      setSidebarSelectionMode(false);
+      showCopyNotice(`Copied ${count} session ID${count === 1 ? "" : "s"}`);
+    } catch {
+      showCopyNotice("Could not copy session IDs", true);
+    }
+  }, [selectedSessionIds, showCopyNotice, sidebarSelectionMode]);
 
   const handleGroupModeChange = useCallback((mode: SessionGroupMode) => {
     setSessionGroupMode(mode);
@@ -263,6 +317,13 @@ export function App() {
                 />
               )}
               {!sidebarCollapsed && (
+                <SidebarBatchCopyButton
+                  active={sidebarSelectionMode}
+                  selectedCount={selectedSessionIds.size}
+                  onClick={() => void handleBatchCopy()}
+                />
+              )}
+              {!sidebarCollapsed && (
                 <SessionGroupToggle
                   mode={sessionGroupMode}
                   compact
@@ -278,12 +339,24 @@ export function App() {
               selectedPath={session.sessionPath || null}
               groupMode={sessionGroupMode}
               sortOrder={sessionGroupMode === "directory" ? sidebarSortOrder : "newest"}
+              selectionMode={sidebarSelectionMode}
+              selectedSessionIds={selectedSessionIds}
               collapsedDates={collapsedGroups}
               onSelectSession={handleSelectSession}
+              onToggleSessionSelection={handleToggleSessionSelection}
               onToggleDate={handleToggleGroup}
             />
           )}
         </div>
+
+        {copyNotice && (
+          <div
+            className={`app__copy-notice${copyNotice.error ? " app__copy-notice--error" : ""}`}
+            role={copyNotice.error ? "alert" : "status"}
+          >
+            {copyNotice.message}
+          </div>
+        )}
 
         {!sidebarCollapsed && <ResizeHandle onResize={setSidebarWidth} />}
 

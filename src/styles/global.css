@@ -1061,13 +1061,16 @@ body {
 .message__content--collapsed {
   max-height: calc(12px * 1.5 * 12); /* ~12 lines */
   overflow: hidden;
-  position: relative;
 }
 .message__content--error {
   color: var(--error);
 }
 
-.message__content--collapsed::after {
+.message--claude .message__content--collapsed {
+  position: relative;
+}
+
+.message--claude .message__content--collapsed::after {
   content: "";
   position: absolute;
   bottom: 0;
@@ -1078,7 +1081,7 @@ body {
   pointer-events: none;
 }
 
-.message--selected .message__content--collapsed::after {
+.message--claude.message--selected .message__content--collapsed::after {
   background: linear-gradient(transparent, var(--bg-elevated));
 }
 
@@ -2435,6 +2438,42 @@ body {
   align-items: center;
   gap: 4px;
 }
+.sidebar-batch-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 24px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.sidebar-batch-copy-button:hover,
+.sidebar-batch-copy-button[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+.sidebar-batch-copy-button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.subagent-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--icon-spawn);
+}
+.subagent-marker svg {
+  width: 14px;
+  height: 14px;
+}
 .sidebar-directory-actions {
   display: inline-flex;
   align-items: center;
@@ -2606,6 +2645,14 @@ body {
   flex: 1;
   min-width: 0;
 }
+.sidebar-tree__session-checkbox {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin: 0 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 .sidebar-tree__session--ongoing {
   border-left-color: var(--ongoing);
 }
@@ -2620,6 +2667,53 @@ body {
   color: var(--text-dim);
   white-space: nowrap;
   flex-shrink: 0;
+}
+.sidebar-tree__copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+}
+.sidebar-tree__session:hover .sidebar-tree__copy-button,
+.sidebar-tree__session:focus-within .sidebar-tree__copy-button,
+.sidebar-tree__copy-button--copied {
+  opacity: 1;
+}
+.sidebar-tree__copy-button:hover {
+  background: var(--bg-hover);
+  color: var(--text-bright);
+}
+.sidebar-tree__copy-button--copied {
+  color: var(--status-complete);
+}
+.sidebar-tree__copy-button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.app__copy-notice {
+  position: fixed;
+  top: 38px;
+  right: 12px;
+  z-index: 900;
+  padding: 7px 10px;
+  border: 1px solid var(--status-complete);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-bright);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+}
+.app__copy-notice--error {
+  border-color: var(--error);
 }
 /* Session picker */
 /* Session picker — matches reference layout */
@@ -2855,23 +2949,6 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-}
-.picker__session-badge {
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 10px;
-}
-.picker__session-badge--collab {
-  background: var(--collab-badge);
-  color: #fff;
-}
-.picker__session-badge--external-worker {
-  background: var(--review-mode, #ffaf00);
-  color: #1a1a1a;
-}
-.picker__session-badge--inline-worker {
-  background: var(--collab-badge);
-  color: #fff;
 }
 .picker__session-time {
   margin-left: auto;

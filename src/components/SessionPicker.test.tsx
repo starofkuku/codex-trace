@@ -182,4 +182,20 @@ describe("SessionPicker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Group by date" }));
     expect(onGroupModeChange).toHaveBeenCalledWith("date");
   });
+
+  it("marks sessions that spawned subagents", () => {
+    render(
+      <SessionPicker
+        {...defaultProps}
+        sessions={[
+          {
+            ...makeSession("parent", false),
+            spawned_worker_ids: ["worker-1", "worker-2"],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText("Uses 2 subagents")).toHaveAttribute("title", "Uses 2 subagents");
+  });
 });
