@@ -10,8 +10,14 @@ interface ViewToolbarProps {
   onOpenSettings: () => void;
 }
 
-function scrollContent(to: "top" | "bottom") {
-  const el = document.querySelector(".main-content");
+const scrollContainerByView: Record<ViewState, string> = {
+  picker: ".picker__list",
+  list: ".message-list",
+  detail: ".turn-detail__body",
+};
+
+export function scrollContent(view: ViewState, to: "top" | "bottom") {
+  const el = document.querySelector<HTMLElement>(scrollContainerByView[view]);
   if (el) el.scrollTo({ top: to === "top" ? 0 : el.scrollHeight, behavior: "smooth" });
 }
 
@@ -37,10 +43,10 @@ export function ViewToolbar({
         Collapse All
       </button>
       <span className="view-toolbar__separator" />
-      <button className="view-toolbar__btn" onClick={() => scrollContent("top")}>
+      <button className="view-toolbar__btn" onClick={() => scrollContent(view, "top")}>
         Top
       </button>
-      <button className="view-toolbar__btn" onClick={() => scrollContent("bottom")}>
+      <button className="view-toolbar__btn" onClick={() => scrollContent(view, "bottom")}>
         Bottom
       </button>
       <span className="view-toolbar__spacer" />
