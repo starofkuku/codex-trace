@@ -904,6 +904,34 @@ body {
   scroll-behavior: smooth;
 }
 
+/* ---- Codex reply navigation ---- */
+
+.turn-nav {
+  position: sticky;
+  top: -8px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 4px 12px;
+  margin-bottom: 4px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.turn-nav__position {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 36px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-list__turn {
+  scroll-margin-top: 44px;
+}
+
 .message-list__empty {
   display: flex;
   align-items: center;

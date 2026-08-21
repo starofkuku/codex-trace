@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import type { CodexTurn, SessionPagination } from "../../shared/types";
 import { displayedTokenTotal, formatDuration, formatTokens } from "../../shared/format";
 import { formatExactTime } from "../lib/format";
@@ -47,6 +47,33 @@ export function TurnList({
   const [collapsedUsers, setCollapsedUsers] = useState<Set<number>>(new Set());
   const [expandedCodex, setExpandedCodex] = useState<Set<number>>(new Set());
   const clickTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const [replyNavTurnId, setReplyNavTurnId] = useState<string | null>(null);
+
+  const replyTurns = useMemo(
+    () =>
+      turns
+        .map((turn, index) => ({ turn, index }))
+        .filter(
+          ({ turn }) => turn.error || turn.agent_messages.some((message) => !message.is_reasoning),
+        ),
+    [turns],
+  );
+  const replyNavPos = replyTurns.findIndex(({ turn }) => turn.turn_id === replyNavTurnId);
+
+  const scrollToReplyTurn = useCallback(
+    (dir: 1 | -1) => {
+      const last = replyTurns.length - 1;
+      if (last < 0) return;
+      const current = replyTurns.findIndex(({ turn }) => turn.turn_id === replyNavTurnId);
+      const next = Math.min(current, last) + dir;
+      if (next < 0 || next > last) return;
+      const target = replyTurns[next];
+      const el = listRef.current?.querySelector<HTMLElement>(`[data-turn-index="${target.index}"]`);
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      setReplyNavTurnId(target.turn.turn_id);
+    },
+    [replyNavTurnId, replyTurns, listRef],
+  );
 
   const toggleUser = useCallback((i: number) => {
     setCollapsedUsers((prev) => {
@@ -87,6 +114,31 @@ export function TurnList({
 
   return (
     <div ref={listRef} className="message-list">
+      <div className="turn-nav" role="navigation" aria-label="Codex reply navigation">
+        <button
+          type="button"
+          className="view-toolbar__btn"
+          onClick={() => scrollToReplyTurn(-1)}
+          disabled={replyNavPos <= 0}
+          aria-label="Previous Codex reply"
+          title="Previous Codex reply"
+        >
+          <BackIcon /> Prev Codex
+        </button>
+        <span className="turn-nav__position">
+          {replyNavPos >= 0 ? `${replyNavPos + 1}` : "–"}/{replyTurns.length}
+        </span>
+        <button
+          type="button"
+          className="view-toolbar__btn"
+          onClick={() => scrollToReplyTurn(1)}
+          disabled={replyNavPos >= replyTurns.length - 1}
+          aria-label="Next Codex reply"
+          title="Next Codex reply"
+        >
+          Next Codex <ForwardIcon />
+        </button>
+      </div>
       {pagination?.has_more && pagination.direction === "backward" && onLoadMore && (
         <button
           type="button"
@@ -128,6 +180,7 @@ export function TurnList({
             key={turn.turn_id}
             ref={isSelected ? selectedRef : undefined}
             className="turn-list__turn"
+            data-turn-index={i}
           >
             {/* User message */}
             <div
